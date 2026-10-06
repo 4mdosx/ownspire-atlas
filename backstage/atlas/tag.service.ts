@@ -264,7 +264,21 @@ export async function attachSystemTag(entryId: string, name: string, ruleId: str
     .onConflictDoUpdate({ target: [entryTags.entryId, entryTags.tagId], set: { origin: 'system', ruleId: ruleId.trim() } })
 }
 
-/** 整批摘掉某条规则挂上的 tag —— 项目结束时的清理。 */
+/**
+ * 整批摘掉某条规则挂上的 tag —— 项目结束时的清理。
+ *
+ * ⚠️⚠️ **这是全局删除，不限定在某条条目上。** 签名里只有 `ruleId`，
+ * **没有 `entryId`** —— 所以凡是引用同一 `ruleId` 的条目，tag 都会被摘掉。
+ *
+ * ⚠️ 这一点在测试里长期被测错（我曾写成 `detachSystemTagsByRule(entryId, ruleId)`，
+ * 多传一个参数反而被忽略，于是「只摘了那条的」是假绿）。所以这里写死注释：
+ *
+ * · 要**只摘某一条**的 tag → 用 `detachEntryTag(entryId, tagId)`
+ * · 要**按规则全局清**（项目结束）→ 用这个
+ *
+ * 两者不能混：系统 tag 的语义本来就是「这条记录因为某规则而被标记」，
+ * 所以清一个规则就该清全部 —— 否则库里会留下半截状态。
+ */
 export async function detachSystemTagsByRule(ruleId: string): Promise<number> {
   const db = await getDatabase()
   const [row] = await db

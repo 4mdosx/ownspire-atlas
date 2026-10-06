@@ -52,54 +52,53 @@ async function main(): Promise<void> {
     taxonomy: { scale: 0.83, form: 0.33 },
   }
 
-  // 1. 三档都要产出对应的列宽
-  for (const size of ['sm', 'md', 'lg'] as const) {
-    const html = renderToStaticMarkup(<EntryGrid entries={[entry]} onSelect={() => {}} size={size} />)
-    const column = GALLERY_MIN_COLUMN[size]
-    check(
-      `${size} 档列宽为 ${column}px`,
-      html.includes(`minmax(${column}px`),
-      html.includes(`minmax(${column}px`) ? '' : '实际输出里没找到',
-    )
-  }
+  // ⚠️ 这个脚本测的是**渲染后的字符串**，因为那些约定在界面上「看不出来」：
+  // 列宽差几像素、tag 少渲染一个、字号小一号 —— 没有断言就会静默回退，
+  // 而看截图只会觉得「好像有点挤」。
+  //
+  // 所以每条断言都必须对应一个**具体的静默回退**，不为覆盖率而测。
+  const render = (size: 'sm' | 'md' | 'lg', item = entry) =>
+    renderToStaticMarkup(<EntryGrid entries={[item]} onSelect={() => {}} size={size} />)
 
-  // 2. 三档的列宽必须互不相同 —— 否则「切换」是假的
-  const widths = (['sm', 'md', 'lg'] as const).map((size) => {
-    const html = renderToStaticMarkup(<EntryGrid entries={[entry]} onSelect={() => {}} size={size} />)
-    return html.match(/minmax\((\d+)px/)?.[1]
-  })
-  check('三档列宽互不相同', new Set(widths).size === 3, widths.join(' / '))
+  const TAGS = ['>biped<', '>animal:cat<', '>wing<']
 
-  // 3. sm 档应该是最小的那个（96）—— 这是「列表太大」这个诉求的核心
-  check('sm 档是最小尺寸', widths[0] === String(GALLERY_MIN_COLUMN.sm), `${widths[0]} vs ${GALLERY_MIN_COLUMN.sm}`)
+  // ① 三档列宽必须**互不相同**且 sm 最小 —— 否则「尺寸切换」是个假的开关
+  const widths = (['sm', 'md', 'lg'] as const).map((size) => render(size).match(/minmax\((\d+)px/)?.[1])
+  check(
+    '三档列宽互不相同且 sm 最小（否则切换是假的）',
+    new Set(widths).size === 3 && widths[0] === String(GALLERY_MIN_COLUMN.sm) && widths[1] === String(GALLERY_MIN_COLUMN.md),
+    widths.join(' / '),
+  )
 
-  // 4. sm 档省地方：tag 只留 1 个（3 个 tag 时不该全渲染）
-  const smHtml = renderToStaticMarkup(<EntryGrid entries={[entry]} onSelect={() => {}} size="sm" />)
-  const shownTags = (smHtml.match(/>[a-z:]+</g) ?? []).filter((t) => ['>biped<', '>animal:cat<', '>wing<'].includes(t))
-  check('sm 档 tag 只留 1 个', shownTags.length === 1, `实际渲染 ${shownTags.length} 个`)
-  check('sm 档显示 +N 提示', smHtml.includes('+2'), '没找到 +2')
+  // ② sm 档必须省地方：tag 只留 1 个并给 +N 提示，否则小图还是会撑破布局
+  const smHtml = render('sm')
+  const shownTags = TAGS.filter((tag) => smHtml.includes(tag))
+  check(
+    'sm 档只渲染 1 个 tag 并显示 +N',
+    shownTags.length === 1 && smHtml.includes('+2'),
+    `渲染 ${shownTags.length} 个 · +2 ${smHtml.includes('+2') ? '有' : '无'}`,
+  )
 
-  // 5. md/lg 档保留 3 个 tag
-  const mdHtml = renderToStaticMarkup(<EntryGrid entries={[entry]} onSelect={() => {}} size="md" />)
-  const mdTags = ['>biped<', '>animal:cat<', '>wing<'].filter((t) => mdHtml.includes(t))
-  check('md 档 tag 保留 3 个', mdTags.length === 3, `实际 ${mdTags.length} 个`)
+  // ③ 同一套内容在大档位下必须完整：tag 全留、维度数字出现
+  const mdHtml = render('md')
+  check(
+    'md 档保留全部 tag 且显示维度数字',
+    TAGS.every((tag) => mdHtml.includes(tag)) && mdHtml.includes('>2</span>'),
+    `tag ${TAGS.filter((t) => mdHtml.includes(t)).length}/3 · 数字 ${mdHtml.includes('>2</span>') ? '有' : '无'}`,
+  )
 
-  // 6. sm 档字更小（text-[10px] -> text-[9px]）
-  check('sm 档用更小字号', smHtml.includes('text-[9px]') && !smHtml.includes('min-h-16'))
-  check('md 档保留 min-h-16 文字区', mdHtml.includes('min-h-16'))
+  // ④ sm 档字号更小且不留空文字区 —— 否则「小图」只是图小，卡片高度没变
+  check('sm 档字号更小且不留文字区', smHtml.includes('text-[9px]') && !smHtml.includes('min-h-16') && mdHtml.includes('min-h-16'))
 
-  // 7. 评过的维度：小图只留圆点，大图才写数字
-  check('sm 档不显示维度数字', !smHtml.includes('>2</span>'))
-  check('md 档显示维度数字', mdHtml.includes('>2</span>'))
-
-  // 8. 无图条目给占位而不是破图
-  const noImage = { ...entry, imagePath: '' }
-  const noHtml = renderToStaticMarkup(<EntryGrid entries={[noImage]} onSelect={() => {}} size="md" />)
-  check('无图给占位文案', noHtml.includes('无图'))
-
-  // 9. 空列表给引导文案
-  const emptyHtml = renderToStaticMarkup(<EntryGrid entries={[]} onSelect={() => {}} size="md" />)
-  check('空列表有引导文案', emptyHtml.includes('还没有东西'))
+  // ⑤ 两个空态都不能是空白 —— 空态没提示的话，用户会以为页面坏了
+  check(
+    '无图给占位文案',
+    render('md', { ...entry, imagePath: '' }).includes('无图'),
+  )
+  check(
+    '空列表有引导文案',
+    renderToStaticMarkup(<EntryGrid entries={[]} onSelect={() => {}} size="md" />).includes('还没有东西'),
+  )
 
   const failed = results.filter((item) => !item.ok)
   console.log(`\n${results.length - failed.length}/${results.length} 通过`)

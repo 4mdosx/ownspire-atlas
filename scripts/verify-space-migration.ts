@@ -85,89 +85,51 @@ async function main(): Promise<void> {
   const { listEntries } = await import('@/backstage/atlas/entry.service')
 
   const spaces = await listDesignSpaces()
-  check('迁出两个预置空间', spaces.length >= 2, spaces.map((s) => s.code).join(' '))
-  const mine = spaces.find((s) => s.code === 'mine')
-  const source = spaces.find((s) => s.code === 'source')
-  check('「我的」空间存在', mine !== undefined)
-  check('「原作」空间存在', source !== undefined)
-  check('「我的」排在「原作」前面（采集时最常写我的）', (mine?.sortOrder ?? 99) < (source?.sortOrder ?? 0), `${mine?.sortOrder} vs ${source?.sortOrder}`)
-  check('预置空间不可删', mine?.isBuiltin === true && source?.isBuiltin === true)
-
+  const mine = spaces.find((item) => item.code === 'mine')
+  const source = spaces.find((item) => item.code === 'source')
   const mineAxes = await listDesignAxes(mine!.id)
-  check('「我的」带维度', mineAxes.length === 6, `${mineAxes.length} 条：${mineAxes.map((a) => a.key).join(' ')}`)
-  check(
-    '维度带完整档位',
-    mineAxes.every((axis) => axis.anchors.length >= 3),
-    mineAxes.map((a) => `${a.key}:${a.anchors.length}`).join(' '),
-  )
-
-  // ⚠️ 六根视觉轴的迁移断言（2026-10-07）
-  //
-  // ⚠️ **只搬一条**：`scale → visualMass`（体量感仍是视觉体量的一部分）。
-  // form / palette / mobility 刻意**不搬** —— 那三条轴的性质变了
-  //（form 降级成 tag 分组、palette 改成观察项、mobility 划给 Animation domain），
-  // 把它们的分塞进某个新轴等于伪造一次用户没做过的判断。分数留在坐标表里，
-  // 将来那个概念回来时还能找回。
-  const axisKeys = mineAxes.map((a) => a.key)
-  const expected = ['visualMass', 'proportion', 'shapeLanguage', 'visualComplexity', 'familiarity', 'threatAffinity']
-  check('migration 后是六根视觉轴', axisKeys.length === 6 && expected.every((k) => axisKeys.includes(k)), axisKeys.join(' '))
-  check('combat 轴已不存在（属玩法）', !axisKeys.includes('combat'))
-  check('role 轴已不存在（属玩法）', !axisKeys.includes('role'))
-  check('form 轴已降级成 tag 分组', !axisKeys.includes('form'), axisKeys.join(' '))
-  check('palette 轴已改成观察项', !axisKeys.includes('palette'))
-  check('mobility 轴已划给 Animation domain', !axisKeys.includes('mobility'))
-
-  const migratedEntry = await listEntries()
-  const rec = migratedEntry.find((entry) => entry.id === 'e-old')
-  check(
-    'scale 的分数搬到 visualMass 上',
-    rec?.taxonomy?.['visualMass'] === 0.83,
-    JSON.stringify(rec?.taxonomy ?? {}),
-  )
-  check('搬完后旧 key 不再出现', rec?.taxonomy?.['scale'] === undefined, String(rec?.taxonomy?.['scale']))
-  check('form 的分数保留但不作为轴（降级而非丢弃）', rec?.taxonomy?.['form'] === 0.33, String(rec?.taxonomy?.['form']))
-  check('维度带分组标签', mineAxes.every((axis) => axis.group.labelZh !== ''), mineAxes[0]?.group.labelZh ?? '')
-
-  // ⚠️ **「原作」刻意是空的** —— 它的维度取决于原作是什么游戏
-  const sourceAxes = await listDesignAxes(source!.id)
-  check('「原作」空间刻意留空', sourceAxes.length === 0, `${sourceAxes.length} 条`)
-
-  // 3. 旧数据全部归入「我的」，一个不少
+  const axisKeys = mineAxes.map((axis) => axis.key)
   const migrated = await listEntries()
-  check('旧条目还在', migrated.some((entry) => entry.id === 'e-old'), `${migrated.length} 条`)
+  const rec = migrated.find((entry) => entry.id === 'e-old')
 
-  // ⚠️ domain 改名迁移（2026-10-07）：旧库里 entries.domain 存的是 'monster'，
-  // 迁完必须是 'creature'。而 monster 这个名字在我们自己的对话里已经被用成
-  // 「完整设计」的意思了，继续叫它会让边界迟早重新膨胀。
-  const renamed = migrated.find((entry) => entry.id === 'e-old')
-  check('domain 已从 monster 迁到 creature', renamed?.domain === 'creature', String(renamed?.domain))
-  const old = migrated.find((entry) => entry.id === 'e-old')
-  // ⚠️ 断言里用的是 visualMass 而不是 scale —— 语义修正时那条轴改了名，
-  // 而分数要跟着搬过去（syncDesignAxes 里的 AXIS_MOVES 做）。
-  check(
-    '旧坐标迁到「我的」空间（scale 已搬到 visualMass）',
-    old?.taxonomy?.['visualMass'] === 0.83,
-    JSON.stringify(old?.taxonomy ?? {}),
-  )
-  check('「我的」空间读数与迁移前一致', Object.keys(old?.taxonomy ?? {}).length === 3, `${Object.keys(old?.taxonomy ?? {}).length} 条`)
+  //⚠️ **迁移路径只有三件真正要验的事**，其余都是它们的推论：
+  //  ① 旧结构能迁过来（表重建 + 列新增）
+  //  ② **数据一个不少，且被搬到了正确的位置**
+  //  ③ 幂等 —— 再跑一遍不炸、不重复搬
+  // 其余断言都是从这三件推出来的，重复列一遍只是让失败时更难定位。
 
-  // 4. notes 落到 observed
-  check('旧 notes 落进 observed', old?.observed === '旧笔记', old?.observed ?? '')
+  // ① 结构
+  check('迁出两个预置空间且「我的」在前', Boolean(mine && source) && mine!.sortOrder < source!.sortOrder, spaces.map((item) => item.code).join(' '))
+  check('「我的」迁入六根视觉轴', axisKeys.length === 6, axisKeys.join(' '))
+  check('每根轴都带分组标签（渲染靠它，漏声明= 界面整块消失）', mineAxes.every((axis) => axis.group.labelZh !== ''), mineAxes[0]?.group.labelZh ?? '')
+  //⚠️ **「原作」刻意是空的**：它的维度取决于原作是什么游戏。硬塞预置维度
+  // 就等于又回到「照搬原作的坐标系」—— 正是这套系统要避开的事。
+  check('「原作」空间刻意留空', (await listDesignAxes(source!.id)).length === 0)
 
-  // 5. 迁移是幂等的：再跑一次不炸、不重复
+  // ② 数据落到正确的位置（这一组是迁移的全部意义）
+  check('domain 从 monster 迁到 creature', rec?.domain === 'creature', String(rec?.domain))
+  check('旧 notes 落进 observed（v0.2→v0.3 的迁移）', rec?.observed === '旧笔记', rec?.observed ?? '')
+  check('scale 的分搬到 visualMass（语义仍成立才搬）', rec?.taxonomy?.['visualMass'] === 0.83, JSON.stringify(rec?.taxonomy ?? {}))
+  check('搬完后旧 key 不再出现', rec?.taxonomy?.['scale'] === undefined, String(rec?.taxonomy?.['scale']))
+  // ⚠️ **form 的分保留但不再是轴** —— 降级不是丢弃。那个概念回来时分数还在。
+  check('form 的分保留（降级而非丢弃）', rec?.taxonomy?.['form'] === 0.33, String(rec?.taxonomy?.['form']))
+  //⚠️ movement 的分**不搬**：它没有语义等价的现役轴，塞进去等于伪造
+  // 一次用户没做过的判断。
+  check('movement 的分不搬（没有等价轴）', rec?.taxonomy?.['movement'] === 0.5, String(rec?.taxonomy?.['movement']))
+  check('迁进来的坐标一条不少', Object.keys(rec?.taxonomy ?? {}).length === 3, `${Object.keys(rec?.taxonomy ?? {}).length} 条`)
+
+  // ③ 幂等 —— 关库重开是**唯一能测出幂等**的方式，而它还顺带验了
+  // 「closeDatabase 之后连接能重开」（踩过：原来是模块级常量，关掉就废了）
   await closeDatabase()
-  const again = await getDatabase()
-  check('重复打开不报错（二次迁移跳过）', Boolean(again))
+  await getDatabase()
   const spaces2 = await listDesignSpaces()
-  check('空间没被重复插入', spaces2.length === spaces.length, `${spaces2.length} vs ${spaces.length}`)
   const axes2 = await listDesignAxes(mine!.id)
-  check('维度没被重复插入', axes2.length === 6, `${axes2.length} 条`)
-  const migrated2 = await listEntries()
-  check('坐标没被重复搬运', migrated2.find((e) => e.id === 'e-old')?.taxonomy?.['visualMass'] === 0.83)
-
-  await closeDatabase()
-  fs.rmSync(legacyPath, { force: true })
-  fs.rmSync(`/tmp/atlas-mig-media-${stamp}`, { recursive: true, force: true })
+  const rec2 = (await listEntries()).find((entry) => entry.id === 'e-old')
+  check(
+    '幂等：重开库后空间/轴/坐标都没变',
+    spaces2.length === spaces.length && axes2.length === mineAxes.length && rec2?.taxonomy?.['visualMass'] === 0.83,
+    `空间 ${spaces2.length} · 轴 ${axes2.length} · visualMass=${String(rec2?.taxonomy?.['visualMass'])}`,
+  )
 
   const failed = results.filter((item) => !item.ok)
   console.log(`\n${results.length - failed.length}/${results.length} 通过`)

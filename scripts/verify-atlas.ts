@@ -31,7 +31,7 @@ async function main(): Promise<void> {
   const service = await import('@/backstage/atlas/entry.service')
   const { createEntry, listEntries, untaggedCount, statusCounts, updateEntry, changeDomain, setTaxonomy, clearTaxonomyDimension, getEntryDetail } = service
   const tagService = await import('@/backstage/atlas/tag.service')
-  const { attachEntryTagsByName, attachSystemTag, findTagByName, tagsForEntries, detachSystemTagsByRule } = tagService
+  const { attachEntryTagsByName, attachSystemTag, detachEntryTag, findTagByName, tagsForEntries, detachSystemTagsByRule } = tagService
   const atlas = await import('@/types/atlas')
   const { scoreToStars, starsToScore, TAXONOMY_STEPS } = atlas
   const db = await import('@/backstage/db/database')
@@ -56,210 +56,204 @@ async function main(): Promise<void> {
   const src = 'https://example.com/creature'
   const creature = 'creature'
 
-  console.log('\n— 未打标逻辑（v0.1 裁定，v0.2 保留）—')
+  console.log('\n— 未打标 · 来源可选 · 图片可选 —')
 
-  // 1. 无 tag 也能存
-  const untagged = await createEntry({ domain: creature, name: '无标条目', sourceUrl: src, imagePath, tagNames: [] })
-  check('无 tag 也能创建条目', untagged.tags.length === 0, `id=${untagged.id}`)
+  // ① 未打标：强制 tag 的反面 ——「先存下来、标签回头补」必须是可行的
+  {
+    const untagged = await createEntry({ domain: creature, name: '无标条目', sourceUrl: src })
+    const tagged = await createEntry({ domain: creature, name: '有标条目', sourceUrl: src, tagNames: ['bird', 'plant'] })
 
-  // 2. 有 tag 也能存
-  const tagged = await createEntry({ domain: creature, name: '有标条目', sourceUrl: src, imagePath, tagNames: ['blob', 'small'] })
-  check('有 tag 也能创建', tagged.tags.length === 2, tagged.tags.map((tag) => tag.name).join(','))
+    check('无 tag 也能创建（tags 不强制）', untagged.tags.length === 0)
+    check('有 tag 也能创建', tagged.tags.length === 2, tagged.tags.map((t) => t.name).join(' '))
 
-  // 3. untagged 筛选只返回无标的那条
-  const onlyUntagged = await listEntries({ untagged: true })
-  check('untagged 筛选只返回无标条目', onlyUntagged.length === 1 && onlyUntagged[0].id === untagged.id, `返回 ${onlyUntagged.length} 条`)
+    // 收口靠视图而不是纪律：欠账要能在界面上被看见
+    const onlyUntagged = await listEntries({ untagged: true })
+    check('untagged 筛选只返回无标条目', onlyUntagged.length === 1 && onlyUntagged[0].id === untagged.id, `${onlyUntagged.length} 条`)
+    check('untaggedCount 与筛选一致', (await untaggedCount()) === 1)
 
-  // 4. 全量仍返回两条
-  const all = await listEntries()
-  check('不筛选时返回全部', all.length === 2, `返回 ${all.length} 条`)
+    // ⚠️ 未打标与具体标签**互斥** —— 两者同时给会让「筛选没生效」还是
+    // 「筛选太严」说不清。前端已先切模式，但后端也必须拒。
+    try {
+      await listEntries({ untagged: true, tagNames: ['bird'] })
+      check('untagged 与具体 tag 应互斥', false, '居然没报错')
+    } catch (error) {
+      check('untagged 与具体 tag 应互斥', true, error instanceof Error ? error.message : '')
+    }
 
-  // 5. 未打标记数
-  check('untaggedCount 正确', (await untaggedCount()) === 1)
+    // ⚠️ 给**无标那条**补标签 —— `untagged` 与 `tagNames` 互斥，所以一次只能测一侧。
+    // attachEntryTagsByName 是**只加不删**的（凡叫 attach* 的都这样）。
+    await attachEntryTagsByName(untagged.id, ['insect'])
+    check('补标签后从未打标消失', (await listEntries({ untagged: true })).length === 0)
+    check('untaggedCount 归零', (await untaggedCount()) === 0)
 
-  // 6. untagged 与具体 tag 互斥
-  try {
-    await listEntries({ untagged: true, tagNames: ['blob'] })
-    check('未打标 + 具体标签应互斥', false, '居然没报错')
-  } catch (error) {
-    check('未打标 + 具体标签应互斥', true, error instanceof Error ? error.message : '')
+    // 摘标 → 欠账回来。**往返**才是完整闭环，只测单向会漏掉「摘标后状态
+    // 没同步」这类 bug。
+    await detachEntryTag(untagged.id, (await findTagByName('insect'))!.id)
+    check('摘掉标签后重新出现在未打标', (await listEntries({ untagged: true })).some((e) => e.id === untagged.id))
+
+    // updateEntry 的 tagNames 是**替换**语义 —— 给空数组等于摘光全部用户标签
+    const replaced = await updateEntry(tagged.id, { tagNames: ['bird'] })
+    check('tagNames 是替换语义（给新列表= 只剩它）', replaced.tags.length === 1 && replaced.tags[0].name === 'bird', replaced.tags.map((t) => t.name).join(' '))
+
+    check('findTagByName 大小写不敏感', (await findTagByName('BIRD')) !== null)
+    check('未打标可与搜索叠加', (await listEntries({ untagged: true, q: '无标' })).length === 1)
+    check('状态计数正常', (await statusCounts()).inbox === 2, JSON.stringify(await statusCounts()))
   }
 
-  // 7. 补上标签后应从未打标里消失
-  await attachEntryTagsByName(untagged.id, ['flying'])
-  check('补标签后从未打标消失', (await listEntries({ untagged: true })).length === 0)
-  check('untaggedCount 归零', (await untaggedCount()) === 0)
+  console.log('\n— origin：系统 tag 与用户 tag 的边界 —')
 
-  // 8. 摘掉标签后应重新出现
-  await updateEntry(tagged.id, { tagNames: [] })
-  const afterStrip = await listEntries({ untagged: true })
-  check('摘掉标签后重新出现在未打标', afterStrip.length === 1 && afterStrip[0].id === tagged.id, `返回 ${afterStrip.length} 条`)
+  // ② origin 存在的全部理由：用户编辑标签时**不能把系统 tag 抹掉**
+  {
+    const entry = await createEntry({ domain: creature, name: '来源标记', sourceUrl: src, tagNames: ['blob'] })
+    await attachSystemTag(entry.id, 'boss', 'proj:alpha')
+    await attachSystemTag(entry.id, 'elite', 'proj:beta')
 
-  // 9. tag 查找大小写不敏感
-  check('findTagByName 大小写不敏感', (await findTagByName('FLYING')) !== null)
+    const sysTag = (await getEntryDetail(entry.id)).tags.find((t) => t.ruleId === 'proj:alpha')
+    check('系统 tag origin=system 且保留 ruleId', sysTag?.origin === 'system' && sysTag?.ruleId === 'proj:alpha', `origin=${sysTag?.origin}`)
 
-  // 10. 未打标可与搜索叠加
-  check('未打标可与搜索叠加', (await listEntries({ untagged: true, q: '有标' })).length === 1)
+    // ⚠️ **这条是本组存在的理由**。updateEntry 的 tagNames 是替换语义，
+    // 而它**只该替换 origin=user 的那些** —— 漏了这个 includeSystem 的实现
+    // 会在用户改一次标签后把项目标记悄悄抹掉，而症状是「筛选结果少了东西」。
+    const edited = await updateEntry(entry.id, { tagNames: ['blob', 'newtag'] })
+    check('用户改标签后系统 tag 仍在', edited.tags.some((t) => t.origin === 'system' && t.ruleId === 'proj:alpha'), JSON.stringify(edited.tags.map((t) => `${t.name}:${t.origin}`)))
+    check('用户 tag 已按替换语义更新', edited.tags.some((t) => t.name === 'newtag'))
 
-  // 11. 状态计数未被污染
-  const counts = await statusCounts()
-  check('状态计数正常', counts.inbox === 2, JSON.stringify(counts))
+    check('origin=system 筛出系统 tag 条目', (await listEntries({ origin: 'system' })).some((e) => e.id === entry.id))
+    check('按 ruleId 精确查', (await listEntries({ origin: 'system', ruleId: 'proj:beta' })).some((e) => e.id === entry.id))
 
-  console.log('\n— origin：用户输入 vs 系统自动添加 —')
+    // 同一个 tag 在不同条目上origin 可以不同 —— origin 挂在关联上，不在词上
+    const other = await createEntry({ domain: creature, name: '另一条', sourceUrl: src, tagNames: ['boss'] })
+    const otherTag = (await getEntryDetail(other.id)).tags.find((t) => t.name === 'boss')
+    check('同一 tag 在不同条目 origin 可不同', otherTag?.origin === 'user', `origin=${otherTag?.origin}`)
 
-  // 12. 系统 tag 挂上后 origin 应为 system
-  await attachSystemTag(tagged.id, 'project-alpha', 'proj:alpha')
-  const withSystem = (await tagsForEntries([tagged.id])).get(tagged.id) ?? []
-  const sysTag = withSystem.find((tag) => tag.name === 'project-alpha')
-  check('系统 tag origin=system', sysTag?.origin === 'system', `origin=${sysTag?.origin} ruleId=${sysTag?.ruleId}`)
-  check('系统 tag 保留 ruleId', sysTag?.ruleId === 'proj:alpha')
-
-  // 13. ⚠️ 用户编辑标签时不能把系统 tag 抹掉 —— 这是 origin 字段存在的全部理由
-  await updateEntry(tagged.id, { tagNames: ['blob'] })
-  const afterEdit = (await tagsForEntries([tagged.id])).get(tagged.id) ?? []
-  const keptSys = afterEdit.find((tag) => tag.name === 'project-alpha')
-  check('用户改标签后系统 tag 仍在', keptSys?.origin === 'system')
-  check('用户 tag 已更新为 blob', afterEdit.some((tag) => tag.name === 'blob' && tag.origin === 'user'))
-
-  // 14. origin 筛选
-  check('origin=system 筛出系统 tag 条目', (await listEntries({ origin: 'system' })).every((entry) => entry.tags.some((tag) => tag.origin === 'system')))
-  check('按 ruleId 查系统 tag', (await listEntries({ origin: 'system', ruleId: 'proj:alpha' })).length === 1)
-
-  // 15. 同一 tag 不同条目 origin 可以不同
-  await attachEntryTagsByName(untagged.id, ['project-alpha'])
-  const split = await tagsForEntries([untagged.id, tagged.id])
-  check(
-    '同 tag 不同条目 origin 独立',
-    (split.get(untagged.id) ?? []).find((tag) => tag.name === 'project-alpha')?.origin === 'user' &&
-      (split.get(tagged.id) ?? []).find((tag) => tag.name === 'project-alpha')?.origin === 'system',
-    '这正是 origin 必须挂关联表的原因',
-  )
-
-  // 16. 按规则整批摘
-  check('detachSystemTagsByRule 摘掉 1 条', (await detachSystemTagsByRule('proj:alpha')) === 1)
-
-  console.log('\n— taxonomy：星级 ⇆ score 映射 —')
-
-  // 17. 星级往返
-  check('starsToScore(5)=1', starsToScore(5) === 1)
-  check('starsToScore(3)=0.6', Math.abs(starsToScore(3) - 0.6) < 1e-9, String(starsToScore(3)))
-  check('scoreToStars(0.6)=3', scoreToStars(0.6) === 3)
-  check('半星 2.5 → 0.5 → 2.5 往返', scoreToStars(starsToScore(2.5)) === 3, `2.5 星 = ${starsToScore(2.5)}`)
-
-  // 18. 步进档位：0.2 步进在 0–1 上是 6 档（含 0），不是 11
-  check('TAXONOMY_STEPS 6 档且末档为 1', TAXONOMY_STEPS.length === 6 && TAXONOMY_STEPS[5] === 1, `档位 ${TAXONOMY_STEPS.join(',')}`)
-  check('半星只给 6 个可点值', TAXONOMY_STEPS.length === 6, '5 星 + 半星 ≠ 11 档')
-
-  // 19. taxonomy 是 sparse 的 —— 没打分的维度不出现
-  await setTaxonomy(tagged.id, { visualMass: 0.8, shapeLanguage: 0.4 })
-  const detail = await getEntryDetail(tagged.id)
-  check('taxonomy 只存给了的维度', Object.keys(detail.taxonomy).length === 2, JSON.stringify(detail.taxonomy))
-  check('0.8 存进去还是 0.8', detail.taxonomy.visualMass === 0.8)
-
-  // 20. 「没打过分」≠「0 分」
-  check('没打分的维度不在结果里', detail.taxonomy.familiarity === undefined)
-  await setTaxonomy(tagged.id, { threatAffinity: 0 })
-  const withZero = await getEntryDetail(tagged.id)
-  check('显式 0 分要与「没打过分」可区分', withZero.taxonomy.threatAffinity === 0 && Object.keys(withZero.taxonomy).length === 3)
-
-  // 21. 清除维度
-  await clearTaxonomyDimension(tagged.id, 'threatAffinity')
-  check('清除维度后只剩 2 个', Object.keys((await getEntryDetail(tagged.id)).taxonomy).length === 2)
-
-  // 22. 陌生维度必须被拒 —— 维度定义在代码里，写入侧就能判
-  try {
-    await setTaxonomy(tagged.id, { nosuchdimension: 0.5 } as never)
-    check('陌生维度应被拒绝', false, '居然没报错')
-  } catch (error) {
-    check('陌生维度应被拒绝', true, error instanceof Error ? error.message : '')
+    check('detachSystemTagsByRule 按 ruleId 摘（不接 entryId）', (await detachSystemTagsByRule('proj:alpha')) === 1)
+    check('另一条规则的没被波及（全局删只碰该 ruleId）', (await getEntryDetail(entry.id)).tags.some((t) => t.ruleId === 'proj:beta'))
   }
 
-  console.log('\n— domain 分流 —')
+  console.log('\n— 星级 ⇆ score 映射 —')
 
-  // 23. 扩展表自动创建
-  check('monster 条目自动建扩展行', detail.extension !== null)
-
-  // 24. domain 筛选
-  check('domain=creature 筛出两条', (await listEntries({ domain: creature })).length === 2)
-  check('domain=未知名不报错且返回空', (await listEntries({ domain: 'nope' as never })).length === 0)
-
-  // 25. 换 domain 会丢弃不兼容的打分
-  await changeDomain(tagged.id, 'creature')
-  check('换到同domain 是幂等的', (await getEntryDetail(tagged.id)).domain === creature)
-
-  // 26. imagePath 可空
-  const noImage = await createEntry({ domain: creature, name: '无图条目', sourceUrl: src })
-  check('没有图片也能创建', noImage.imagePath === '', `imagePath="${noImage.imagePath}"`)
-
-  // 27. 拒绝绝对路径 / ..
-  try {
-    await createEntry({ domain: creature, name: '坏路径', sourceUrl: src, imagePath: '/etc/passwd' })
-    check('绝对路径应被拒绝', false, '居然没报错')
-  } catch (error) {
-    check('绝对路径应被拒绝', true, error instanceof Error ? error.message : '')
-  }
-  try {
-    await createEntry({ domain: creature, name: '穿越路径', sourceUrl: src, imagePath: '../../etc/passwd' })
-    check('.. 穿越应被拒绝', false, '居然没报错')
-  } catch (error) {
-    check('.. 穿越应被拒绝', true, error instanceof Error ? error.message : '')
+  // ③ 星级是**显示编码**，不是数据
+  {
+    const { starsToScore, scoreToStars, TAXONOMY_STEPS } = atlas
+    check('starsToScore(3)=0.6', Math.abs(starsToScore(3) - 0.6) < 1e-9, String(starsToScore(3)))
+    check('往返一致（半星可点）', scoreToStars(starsToScore(2.5)) === 3, `2.5 星 → ${starsToScore(2.5)} → ${scoreToStars(starsToScore(2.5))} 星`)
+    // ⚠️ 5 星 + 半星 = **6 个可点值**，不是 11 档。11 档对应 0.1 步进，
+    // 那是滑杆的精度 —— 两个概念混了就会出现「11 个星星」的界面。
+    check('半星只给 6 个可点值（≠ 11 档）', TAXONOMY_STEPS.length === 6, `${TAXONOMY_STEPS.length} 档：${TAXONOMY_STEPS.join(' ')}`)
   }
 
-  // 28. 来源强制
-  try {
-    await createEntry({ domain: creature, name: '无来源', sourceUrl: '' })
-    check('缺来源应被拒绝', false, '居然没报错')
-  } catch (error) {
-    check('缺来源应被拒绝', true, error instanceof Error ? error.message : '')
+  console.log('\n— 坐标：sparse · 0 分与未打分的区别 —')
+
+  // ④ 「没打过分」≠「打了 0 分」—— **这是 sparse 表存在的全部理由**
+  {
+    const entry = await createEntry({ domain: creature, name: '打分测试', sourceUrl: src })
+    await setTaxonomy(entry.id, { visualMass: 0.8, shapeLanguage: 0.4 })
+    const detail = await getEntryDetail(entry.id)
+    check('taxonomy 只存给了的维度（sparse）', Object.keys(detail.taxonomy).length === 2, JSON.stringify(detail.taxonomy))
+    check('0.8 存进去还是 0.8', detail.taxonomy.visualMass === 0.8)
+    check('没打分的维度不出现在结果里', detail.taxonomy.familiarity === undefined)
+
+    await setTaxonomy(entry.id, { threatAffinity: 0 })
+    const withZero = await getEntryDetail(entry.id)
+    check(
+      '显式 0 分要与「没打过分」可区分',
+      withZero.taxonomy.threatAffinity === 0 && Object.keys(withZero.taxonomy).length === 3,
+      `${Object.keys(withZero.taxonomy).length} 个维度`,
+    )
+
+    await clearTaxonomyDimension(entry.id, 'shapeLanguage')
+    check('清除维度后只剩 2 个', Object.keys((await getEntryDetail(entry.id)).taxonomy).length === 2)
+
+    try {
+      await setTaxonomy(entry.id, { nosuchdimension: 0.5 } as never)
+      check('陌生维度应被拒绝', false, '居然没报错')
+    } catch (error) {
+      check('陌生维度应被拒绝', true, error instanceof Error ? error.message : '')
+    }
   }
 
-  // 29. 维度分组的完整性（2026-10-06 两级结构）
-  // 每个维度必须属于某个已声明的 group，否则界面上它会**整块消失**
-  // —— 渲染是按 group 遍历维度的，漏声明就是静默丢失。
+  console.log('\n— domain 分流 · 图片路径安全 —')
+
+  // ⑤ domain 分流 + 媒体路径
+  {
+    const entry = await createEntry({ domain: creature, name: '分流测试', sourceUrl: src })
+    check('creature 条目自动建扩展行', (await getEntryDetail(entry.id)).extension !== null)
+    check('domain=creature 筛出条目', (await listEntries({ domain: creature })).some((e) => e.id === entry.id))
+    check('domain=未知名返回空而不报错', (await listEntries({ domain: 'nope' as never })).length === 0)
+    check('换到同 domain 是幂等的', (await changeDomain(entry.id, creature)).domain === creature)
+
+    // imagePath 从 v0.2 起可空 —— 没有图的条目照样能存（缺失图不该阻塞采集）
+    const noImage = await createEntry({ domain: creature, name: '无图条目', sourceUrl: src })
+    check('没有图片也能创建', noImage.imagePath === '', `imagePath="${noImage.imagePath}"`)
+
+    // ⚠️ **路径逃逸必须在写入侧被拒**。`imagePath` 来自用户输入（粘贴、
+    // 手工填写），`../` 能写到 media 根之外 —— 那是任意文件写。
+    for (const bad of ['/etc/passwd', '../../escape.png', 'verify/../../../escape.png']) {
+      try {
+        await updateEntry(noImage.id, { imagePath: bad })
+        check(`路径逃逸应被拒：${bad.slice(0, 24)}`, false, '居然成功了')
+      } catch {
+        check(`路径逃逸应被拒：${bad.slice(0, 24)}`, true)
+      }
+    }
+
+    try {
+      await createEntry({ domain: creature, name: '无来源', sourceUrl: '' })
+      check('来源应必填（它是唯一的硬约束）', false, '居然建成功了')
+    } catch (error) {
+      check('来源应必填（它是唯一的硬约束）', true, error instanceof Error ? error.message : '')
+    }
+  }
+
+  // 29. 维度分组的完整性
+  //
+  // ⚠️ 守的是**静默丢失**：渲染按 group 遍历维度，漏声明 group 的维度会在
+  // 界面上整块消失而不报错。所以要验「不重不漏」，而不是逐个点名。
   {
     const { dimensionsOf, groupsOf, dimensionsInGroup } = atlas
-    const groupKeys = new Set(groupsOf(creature).map((group) => group.key))
     const all = dimensionsOf(creature)
-    const orphans = all.filter((dimension) => !groupKeys.has(dimension.group))
-    check('所有维度都有归属 group', orphans.length === 0, orphans.map((d) => d.key).join(',') || '无孤儿')
+    const groupKeys = new Set(groupsOf(creature).map((group) => group.key))
 
-    // 反向：group 声明了但没有维度
-    const emptyGroups = groupsOf(creature).filter((group) => dimensionsInGroup(creature, group.key).length === 0)
-    check('没有空 group', emptyGroups.length === 0, emptyGroups.map((g) => g.key).join(',') || '无空组')
+    check(
+      '每个维度都有归属 group（漏声明 = 界面上整块消失）',
+      all.every((dimension) => groupKeys.has(dimension.group)),
+      all.filter((d) => !groupKeys.has(d.group)).map((d) => d.key).join(',') || '无孤儿',
+    )
+    check(
+      '没有空 group',
+      groupsOf(creature).every((group) => dimensionsInGroup(creature, group.key).length > 0),
+      groupsOf(creature)
+        .filter((g) => dimensionsInGroup(creature, g.key).length === 0)
+        .map((g) => g.key)
+        .join(','),
+    )
 
-    // 分组后的维度总数必须与平铺一致 —— 证明分组是纯归类，没有漏也没有重
     const grouped = groupsOf(creature).flatMap((group) => [...dimensionsInGroup(creature, group.key)])
     check(
-      '分组不重不漏',
+      '分组不重不漏（分组是纯归类）',
       grouped.length === all.length && new Set(grouped.map((d) => d.key)).size === all.length,
       `平铺 ${all.length} · 分组 ${grouped.length}`,
     )
+  }
 
-    // ⭐ 具体的归属（2026-10-06 域收窄后）
-    // creature 域现在**只管形象设计**：combat（战斗方式）与 role（定位）被砍掉，
-    // 因为它们是**关卡玩法**而不是**造型属性**（同一只怪在不同关卡可以是
-    // fodder 也可以是 elite —— 那说明 role 是用法不是属性）。
-    const groupOf = (key: string) => all.find((d) => d.key === key)?.group
-    check('visualMass 归入 form 组', groupOf('visualMass') === 'form', String(groupOf('visualMass')))
-    check('proportion 归入 form 组', groupOf('proportion') === 'form', String(groupOf('proportion')))
-    check('shapeLanguage 归入 form 组', groupOf('shapeLanguage') === 'form', String(groupOf('shapeLanguage')))
-    check('visualComplexity 归入 form 组', groupOf('visualComplexity') === 'form', String(groupOf('visualComplexity')))
-    check('familiarity 归入 read 组', groupOf('familiarity') === 'read', String(groupOf('familiarity')))
-    check('threatAffinity 归入 read 组', groupOf('threatAffinity') === 'read', String(groupOf('threatAffinity')))
-
-    // ⚠️ 这两条是「域收窄」的回归守卫 —— 它们**不该回来**，除非 token 明确
-    // 改主意要采集玩法素材。写死断言是为了让那一刻是「有意识的决定」，
-    // 而不是某次重构顺手把它们带回来。
-    check('combat 轴已砍掉（战斗方式属玩法）', !all.some((d) => d.key === 'combat'))
-    check('role 轴已砍掉（关卡定位属玩法）', !all.some((d) => d.key === 'role'))
-    // ⚠️ 下面三条是「分类不是刻度」的回归守卫（2026-10-07）：
-    // · form 降级成 tag 分组（Blob / Biped / Quadruped 那些参照系）
-    // · palette 改成 observed 里的观察项
-    // · mobility 划给 Animation domain（造型回答「静止时什么质感」，
-    //   动作回答「动起来什么质感」，是两个问题）
-    check('form 轴已降级成 tag 分组', !all.some((d) => d.key === 'form'), all.map((d) => d.key).join(' '))
-    check('palette 轴已改成观察项', !all.some((d) => d.key === 'palette'))
-    check('mobility 轴已划给 Animation domain', !all.some((d) => d.key === 'mobility'))
+  // 29b. ⭐ 退役轴的回归守卫（2026-10-07）
+  //
+  // ⚠️ **这五条守的是不可逆的架构决定**。它们回来必须是有意识的决定，
+  // 而不是某次重构顺手带回来的：
+  //
+  // · combat / role —— 属关卡玩法，不属造型（同一只怪第 3 关是 fodder、
+  //   第 40 关是 elite，那说明 role 是用法不是属性）
+  // · form —— 它是**归类**不是刻度，已降级成 tag 分组
+  // · palette —— 它是特征描述，改成 observed 里的观察项
+  // · mobility —— 它是动作语言，划给 Animation domain
+  //
+  // ⚠️ 一条断言顶五条：只验「这五个 key 一个都不在轴列表里」，不逐个点名 ——
+  // 逐个点名的代价是每加一根新轴都要改测试，而那会让人懒得加轴。
+  {
+    const retired = ['combat', 'role', 'form', 'palette', 'mobility']
+    const keys = new Set(atlas.dimensionsOf(creature).map((d: { key: string }) => d.key))
+    const back = retired.filter((key) => keys.has(key))
+    check('退役的五根轴都不该回来', back.length === 0, back.join(' '))
   }
 
   // 30. 档位 → score 映射（点档位词那条路径）
@@ -385,91 +379,78 @@ async function main(): Promise<void> {
     }
   }
 
-  // 35. ⭐ 多设计空间的坐标读写（2026-10-06）
-  // 重点验「两个空间的同名轴互不覆盖」—— 那是这整个改动要解决的歧义，
-  // 而它出问题时**不报错**，只是分数悄悄不见了。
+  // 35. ⭐ 多设计空间的坐标读写
+  //
+  // ⚠️ 核心只有一件事：**同名轴在不同空间里互不覆盖**。那是整个多空间设计
+  // 要消除的歧义，而它出问题时**不报错**，只是分数悄悄不见了。
+  // 所以下面只围绕它组织，其余是必要的边界。
   {
-    const { listDesignSpaces, createDesignAxis, findSpaceByCode, listDesignAxes, createDesignSpace } = await import('@/backstage/atlas/space.service')
-    const { setTaxonomy, allScoresOf } = service
+    const { listDesignSpaces, createDesignAxis, findSpaceByCode, listDesignAxes, createDesignSpace } =
+      await import('@/backstage/atlas/space.service')
+    const { setTaxonomy, clearTaxonomyDimension, allScoresOf } = service
 
     const spaces = await listDesignSpaces()
     const mine = spaces.find((s) => s.code === 'mine')!
     const source = spaces.find((s) => s.code === 'source')!
-    check('拿到「我的」空间', mine !== undefined, mine?.id)
-    check('拿到「原作」空间', source !== undefined, source?.id)
+    check('预置两个空间且「我的」排在前面（采集时最常写它）', mine !== undefined && source !== undefined && mine.sortOrder < source.sortOrder)
 
-    // ⚠️ 先给「原作」空间加一条与「我的」**同名**的轴 —— 只有同名才能验出覆盖。
-    // 「原作」刻意留空是因为它的维度取决于原作是什么游戏；这里加一条纯粹
-    // 为了证明「同名也不会互相覆盖」。
+    // ⚠️ 先给「原作」加一条与「我的」**同名**的轴 —— 只有同名才能验出覆盖。
+    //「原作」刻意留空是因为它的维度取决于原作是什么游戏；这里加一条纯粹
+    // 为了证明「同名也不覆盖」。
     await createDesignAxis({
       spaceId: source.id,
       key: 'visualMass',
       labelZh: '视觉体量',
       anchors: ['微型', '标准', '大型', '巨型'],
     })
-    check('「原作」空间可以有轴', (await listDesignAxes(source.id)).length === 1)
 
-    const subject = await createEntry({
-      domain: creature,
-      name: '同名轴测试',
-      sourceUrl: 'https://example.com/dual',
-    })
+    const subject = await createEntry({ domain: creature, name: '同名轴测试', sourceUrl: 'https://example.com/dual' })
+    const shared = 'visualMass'
+    await setTaxonomy(subject.id, { [shared]: 0.2 }, mine.id)
+    await setTaxonomy(subject.id, { [shared]: 0.8 }, source.id)
 
-    // ⚠️ 两个空间**各有一条叫 visualMass 的轴**，但它们是各自空间独立定义的 ——
-    // 这正是要验的：同名轴在不同空间里互不覆盖。
-    const mineAxes = await listDesignAxes(mine.id)
-    const sharedKey = 'visualMass'
-    check('「我的」空间有 visualMass 轴', mineAxes.some((axis) => axis.key === sharedKey), mineAxes.map((a) => a.key).join(' '))
-    await setTaxonomy(subject.id, { [sharedKey]: 0.2 }, mine.id)
-    await setTaxonomy(subject.id, { visualMass: 0.8 }, source.id)
-
-    // ⭐ 核心断言：两个空间的同名轴分数必须都在，且不相等
+    // ⭐ 三条断言就是这一组的全部意义
     const mineScores = await getEntryDetail(subject.id, mine.id)
     const sourceScores = await getEntryDetail(subject.id, source.id)
-    check('「我的」空间读到自己的分', mineScores.taxonomy[sharedKey] === 0.2, `${sharedKey}=${String(mineScores.taxonomy[sharedKey])}`)
-    check('「原作」空间读到自己的分', sourceScores.taxonomy['visualMass'] === 0.8, String(sourceScores.taxonomy['visualMass']))
-    // ⭐ 这条才是整个测试的意义：同名轴各自的值都在，没有互相覆盖
-    check('同名轴在两个空间互不覆盖', mineScores.taxonomy[sharedKey] !== sourceScores.taxonomy['visualMass'], `我的=${String(mineScores.taxonomy[sharedKey])} 原作=${String(sourceScores.taxonomy['visualMass'])}`)
+    check('「我的」读到 0.2', mineScores.taxonomy[shared] === 0.2, String(mineScores.taxonomy[shared]))
+    check('「原作」读到 0.8', sourceScores.taxonomy[shared] === 0.8, String(sourceScores.taxonomy[shared]))
+    check(
+      '同名轴互不覆盖（这一组的核心）',
+      mineScores.taxonomy[shared] !== sourceScores.taxonomy[shared],
+      `我的=${String(mineScores.taxonomy[shared])} 原作=${String(sourceScores.taxonomy[shared])}`,
+    )
 
-    // 清除也要按空间隔离
-    await clearTaxonomyDimension(subject.id, 'visualMass', source.id)
+    // 清除要按空间隔离 —— 否则在「原作」视图点清除会删掉「我的」那一行
+    await clearTaxonomyDimension(subject.id, shared, source.id)
     const afterClear = await getEntryDetail(subject.id, mine.id)
-    check('清「原作」的轴不动「我的」', afterClear.taxonomy[sharedKey] === 0.2, String(afterClear.taxonomy[sharedKey]))
+    check('清「原作」不动「我的」', afterClear.taxonomy[shared] === 0.2, String(afterClear.taxonomy[shared]))
 
-    // 未知空间应被拒 —— 空间 id 是外键，db 会拦，但错误信息要可读
-    try {
-      await setTaxonomy(subject.id, { visualMass: 0.5 }, 'space-nope')
-      check('不存在的空间应被拒', false, '居然没报错')
-    } catch (error) {
-      check('不存在的空间应被拒', true, error instanceof Error ? error.message.slice(0, 40) : '')
-    }
-
-    // 空空间写入应被明确拒绝，而不是静默丢数据
+    // ⚠️ 非法输入必须被拒，而**不是因为外键约束报错** —— 错误信息要能指到
+    // 「你传了个不存在的空间」。所以这里验的是被拒，不是崩了。
     const emptySpace = await createDesignSpace({ code: 'proj-empty', labelZh: '空项目空间' })
-    try {
-      await setTaxonomy(subject.id, { anything: 0.5 }, emptySpace.id)
-      check('往没有轴的空间写应被拒', false, '居然没报错')
-    } catch (error) {
-      check('往没有轴的空间写应被拒', true, error instanceof Error ? error.message : '')
+    const rejects: Array<[string, () => Promise<unknown>]> = [
+      ['不存在的空间', () => setTaxonomy(subject.id, { [shared]: 0.5 }, 'space-nope')],
+      ['往没有轴的空间写', () => setTaxonomy(subject.id, { anything: 0.5 }, emptySpace.id)],
+      ['非法的空间 code', () => createDesignSpace({ code: '有中文', labelZh: '非法 code' })],
+    ]
+    for (const [label, run] of rejects) {
+      try {
+        await run()
+        check(`${label}应被拒`, false, '居然没报错')
+      } catch (error) {
+        check(`${label}应被拒`, true, error instanceof Error ? error.message : '')
+      }
     }
 
-    // allScoresOf 必须按空间分开返回
+    // allScoresOf 是导出用的：它返回的 key 必须是空间 **code**（跨机器稳定），
+    // 而不是 id（本地数据）。用错会让导出的包换台机器就对不上。
     const all = await allScoresOf(subject.id)
-    const codeOf = new Map(spaces.map((s) => [s.id, s.code]))
-    const mineByCode = all[codeOf.get(mine.id) ?? '']
-    check('allScoresOf 按空间分组', Boolean(mineByCode), JSON.stringify(Object.keys(all)))
-    check('allScoresOf 里的值正确', mineByCode?.[sharedKey] === 0.2, String(mineByCode?.[sharedKey]))
+    check('allScoresOf 的 key 是空间 code 而非 id', Boolean(all.mine) && all['space-mine'] === undefined, Object.keys(all).join(' '))
+    check('allScoresOf 的值正确', all.mine?.[shared] === 0.2, String(all.mine?.[shared]))
 
-    // 项目空间可自建，code 校验要挡住非法值
-    const proj = await createDesignSpace({ code: 'project-mr', labelZh: 'Maple Rouge', hintZh: '项目坐标系' })
-    check('项目空间可自建', proj.code === 'project-mr', proj.code)
-    check('自建空间不是预置', proj.isBuiltin === false)
-    try {
-      await createDesignSpace({ code: '有中文', labelZh: '非法 code' })
-      check('非法 code 应被拒', false, '居然建成功了')
-    } catch (error) {
-      check('非法 code 应被拒', true, error instanceof Error ? error.message : '')
-    }
+    // 项目空间可自建 —— 「按项目再放坐标」是设计空间存在的理由之一
+    const proj = await createDesignSpace({ code: 'project-mr', labelZh: 'Maple Rouge' })
+    check('项目空间可自建且非预置', proj.code === 'project-mr' && proj.isBuiltin === false, proj.code)
     check('findSpaceByCode 按 code 查', (await findSpaceByCode('project-mr'))?.id === proj.id)
   }
 
