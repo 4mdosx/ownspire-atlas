@@ -77,28 +77,29 @@ export const entries = sqliteTable('entries', {
 })
 
 /**
- * monster 扩展表。1:1，外键指向 entries.id。
+ * ⭐ monster 扩展表 —— **2026-10-06 已清空**，1:1 外键指向 entries.id。
  *
- * ⚠️ **只有 taxonomy 表达不了的结构化数据才放这里。**
+ * ⚠️ **四列行为字段全部砍掉**：attackPattern / behaviorPattern / telegraph /
+ * reactionPattern。它们是**动作表现与战斗机制**，而这个域已收窄为**形象设计**
+ * （token：「主要还是关于怪物形象设计，不要全栈多维度，既关心动作表现又关心
+ * 关卡作用」）。
  *
- * v0.1 的 bodyType / scale / movement / combatRole / attackPattern（离散版）
- * 已被裁掉 —— 它们和 taxonomy 维度重复，留两套就是让用户填两遍，而且两遍
- * 可能不一致。taxonomy 接管那五项。
+ * ⚠️ **为什么砍掉而不是留着**：留着它们的代价不是四列空间，而是**每次采集都会
+ * 面对四个空输入框**，而那些信息在「我看到什么」（observed）的自由文本里写
+ * 一行就够。结构化字段的唯一价值是「要按它查询」，而表情与动作不会被查询 ——
+ * 没有人会问「把所有前摇超过 0.5 秒的怪筛出来」。
  *
- * 剩下的四个 *Pattern 是唯一符合「taxonomy 表达不了」的候选：它们有结构、
- * 有先后和组合关系，不是一条刻度上的位置。
+ * ⚠️ **这次删除零数据损失**：删之前查过，四列全是 `'[]'`。这是「先攒数据再
+ * 设计」的回报 —— 那四个字段从头到尾没被用过一次，所以砍掉不需要任何迁移
+ * 决策（没有「旧格式怎么搬」的问题）。
  *
- * ⚠️ 没有第二个 domain 出现之前，「哪些字段属于扩展表」这个划分只有理论
- * 保证。跑起来发现放错层，改的是加列不是改表。
+ * ⚠️ **表保留本身**，因为 domain 分流还需要它（1:1 扩展行的存在是「这条属于
+ * monster 库」的落地）。真的什么都不需要时它会只剩一个 entryId。
  */
 export const monsterEntries = sqliteTable('monster_entries', {
   entryId: text('entryId')
     .primaryKey()
     .references(() => entries.id, { onDelete: 'cascade' }),
-  attackPattern: text('attackPattern').notNull().default('[]'),
-  behaviorPattern: text('behaviorPattern').notNull().default('[]'),
-  telegraph: text('telegraph').notNull().default('[]'),
-  reactionPattern: text('reactionPattern').notNull().default('[]'),
 })
 
 /**

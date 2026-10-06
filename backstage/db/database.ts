@@ -100,11 +100,7 @@ function ensureSchema(): void {
     -- ⚠️ monster 扩展表与 entries 同名不同形（v0.1 那张是业务表，v0.2 是1:1 扩展）。
     -- 名字复用是为了让 migrateLegacyMonsterEntries 能靠列结构判别新旧。
     CREATE TABLE IF NOT EXISTS monster_entries (
-      entryId TEXT PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
-      attackPattern TEXT NOT NULL DEFAULT '[]',
-      behaviorPattern TEXT NOT NULL DEFAULT '[]',
-      telegraph TEXT NOT NULL DEFAULT '[]',
-      reactionPattern TEXT NOT NULL DEFAULT '[]'
+      entryId TEXT PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS entry_tags (
@@ -171,9 +167,57 @@ function ensureSchema(): void {
   `)
   addMissingColumns()
   migrateLegacyMonsterEntries()
+  dropBehaviorColumns()
   migrateTaxonomySpace()
   seedDesignSpaces()
+  syncDesignAxes()
   schemaVersionApplied = SCHEMA_VERSION
+}
+
+/**
+ * ⭐⭐ 丢弃 `monster_entries` 的四个行为列（2026-10-06 域收窄）。
+ *
+ * ⚠️ **这是删列，所以比加列危险得多** —— 加列最坏是没用上，删列最坏是丢数据。
+ * 因此判据不是「这些列不重要」，而是**「这些列里没有非默认值的数据」**：
+ *
+ *   · 全是 `'[]'`（从未被填过）→ 直接重建表丢掉
+ *   · 有任何一条非 `'[]'`       → **抛错停下**，把内容原样留在表里
+ *
+ * 报错而不是「备份后照样删」：那需要用户来决定「这几条行为描述要不要抢救」，
+ * 而代码不该替他决定。停下问一句的成本，远低于「三个月后发现动作笔记没了」。
+ *
+ * ⚠️ 判断放在**事务外**先查一遍：一旦开始重建，中途失败就只剩半张表。
+ */
+function dropBehaviorColumns(): void {
+  const columns = sqlite().prepare('PRAGMA table_info(monster_entries)').all() as Array<{ name: string }>
+  const dropped = ['attackPattern', 'behaviorPattern', 'telegraph', 'reactionPattern']
+  const present = dropped.filter((column) => columns.some((item) => item.name === column))
+  if (present.length === 0) return
+
+  const marks = present.map((column) => `${column} != '[]'`).join(' OR ')
+  const rows = sqlite()
+    .prepare(`SELECT count(*) AS n FROM monster_entries WHERE ${marks}`)
+    .get() as { n: number }
+  if (rows.n > 0) {
+    throw new Error(
+      `monster_entries 里有 ${rows.n} 条行为描述（${present.join(' / ')}），但 monster 域已收窄为形象设计，这些列要丢掉。\n` +
+        '那些内容还没进 notes 的话，先手工搬过去再重试。库里原样保留着，没有丢。',
+    )
+  }
+
+  sqlite().exec('BEGIN')
+  try {
+    sqlite().exec(`
+      CREATE TABLE monster_entries_new (entryId TEXT PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE);
+      INSERT INTO monster_entries_new (entryId) SELECT entryId FROM monster_entries;
+      DROP TABLE monster_entries;
+      ALTER TABLE monster_entries_new RENAME TO monster_entries;
+    `)
+    sqlite().exec('COMMIT')
+  } catch (error) {
+    sqlite().exec('ROLLBACK')
+    throw error
+  }
 }
 
 /**
@@ -279,32 +323,151 @@ function seedDesignSpaces(): void {
       )
       .run(space.id, space.code, space.labelZh, space.labelEn, space.hintZh, space.sortOrder, now, now)
   }
+}
 
-  // 「我的」空间的维度：种子数据。插完即止（IGNORE），之后维度归 db 管。
-  const count = sqlite().prepare('SELECT count(*) AS n FROM design_axes WHERE spaceId = ?').get('space-mine') as { n: number }
-  if (count.n > 0) return
+/**
+ * ⭐ 「我的」空间的坐标轴与代码里的种子**保持同步**。
+ *
+ * ⚠️ 这里曾是 `if (count > 0) return` —— 只在空库时播种，之后维度归 db 管。
+ * 那个做法在「维度定义搬进数据库」的那一步是对的，但 2026-10-06 域收窄时
+ * 它立刻失效了：库里躺着 5 条旧轴（form/scale/movement/combat/role），
+ * 而新定义只有 4 条（form/scale/palette/mobility）。
+ *
+ * ⚠️ **只增不删的同步是错的**，而「删掉不认识的轴」更危险 —— 用户手工加的
+ * 轴会被无声抹掉。所以这里**显式处理三类情况**：
+ *
+ * 1. **新增**（palette）—— 种子里有、库里没有 → 插进去
+ * 2. **改名**（movement → mobility）—— 库里的旧 key 不在种子里，且种子里
+ *    有一条「同位置的替代品」→ 改名并搬走已有分数。**不能删了重建**，
+ *    那样会丢用户已打的分
+ * 3. **删轴**（combat / role）—— 删掉轴定义，但**分数行保留**：那是用户
+ *    打的分，删轴是产品决定，不是数据清理。分数留着，将来这轴回来时分数还在
+ *
+ * ⚠️ 判据「库里的轴不在种子里」只能用来发现**可能**过时，不能直接删 ——
+ * 用户完全可能自己加了轴（那正是空间可扩展的目的）。所以只删「曾经是种子
+ * 的一部分、现在不在了」的：`SEEDED_AXIS_KEYS` 里记着历史 key。
+ */
+const SEEDED_AXIS_KEYS: ReadonlySet<string> = new Set([
+  // 当前种子
+  'form',
+  'scale',
+  'palette',
+  'mobility',
+  // 已退出种子（2026-10-06 域收窄）：movement 改名成 mobility，combat/role 砍掉
+  'movement',
+  'combat',
+  'role',
+])
 
-  // ⚠️ 这里刻意从 types/atlas.ts import 而不是把维度定义搬进 database.ts：
-  // 定义仍然在那里（那是唯一的真相来源），db 只做一次性的搬运。
+function syncDesignAxes(): void {
+  // ⚠️ 从 types/atlas.ts import 而不是把定义搬进 database.ts：
+  // 定义仍然在那里（那是唯一的真相来源），这里只是做一次性的同步。
   const groupLabel = new Map(MONSTER_TAXONOMY_GROUPS.map((group) => [group.key, group]))
+  const now = new Date().toISOString()
+  const spaceId = 'space-mine'
+
+  const existing = sqlite().prepare('SELECT key, id FROM design_axes WHERE spaceId = ?').all(spaceId) as Array<{
+    key: string
+    id: string
+  }>
+  const existingKeys = new Set(existing.map((row) => row.key))
+  const seedKeys = new Set(MONSTER_TAXONOMY.map((axis) => axis.key))
+
+  let order = 0
+
+  // 1. 新增
   const insert = sqlite().prepare(
     `INSERT OR IGNORE INTO design_axes (id, spaceId, key, labelZh, labelEn, hintZh, groupKey, anchorsJson, sortOrder, createdAt, updatedAt)
-     VALUES (?, 'space-mine', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-  let order = 0
   for (const axis of MONSTER_TAXONOMY) {
+    if (!existingKeys.has(axis.key)) {
+      const group = groupLabel.get(axis.group)
+      insert.run(
+        `axis-${axis.key}`,
+        spaceId,
+        axis.key,
+        axis.labelZh,
+        axis.labelEn,
+        axis.hintZh,
+        `${group?.labelZh ?? ''}|${group?.labelEn ?? ''}`,
+        JSON.stringify(axis.anchors),
+        (order += 10),
+        now,
+        now,
+      )
+    }
+  }
+
+  // 2. 改名：movement → mobility（2026-10-06 域收窄时的唯一一次轴改名）
+  //
+  // ⚠️ **分数的搬迁不依赖「库里有没有那条轴」**，只看坐标行里有没有那个 key。
+  // 理由：轴表可能是全新的（migrateTaxonomySpace 刚建出来），而坐标行是用户
+  // 真打过的分 —— 那种情况下「轴表里没有 movement」不代表「没有 movement 的分」。
+  //
+  // ⚠️ 先搬分数、再改轴的 key，顺序反过来会撞唯一索引
+  //（design_axes 有 UNIQUE(spaceId, key)）。
+  const now2 = new Date().toISOString()
+  const hasOldScores = sqlite()
+    .prepare(`SELECT count(*) AS n FROM entry_taxonomy WHERE spaceId = ? AND dimensionKey = 'movement'`)
+    .get(spaceId) as { n: number }
+  if (hasOldScores.n > 0) {
+    sqlite().exec('BEGIN')
+    try {
+      sqlite()
+        .prepare(`UPDATE entry_taxonomy SET dimensionKey = 'mobility' WHERE spaceId = ? AND dimensionKey = 'movement'`)
+        .run(spaceId)
+      // 轴定义：没有就补一条，有的就改标签（补与改都写成幂等的 upsert）
+      sqlite()
+        .prepare(
+          `INSERT INTO design_axes (id, spaceId, key, labelZh, labelEn, hintZh, groupKey, anchorsJson, sortOrder, createdAt, updatedAt)
+           VALUES ('axis-mobility', ?, 'mobility', '动势', 'Mobility', '静止时给人的重量感。它跳不跳、怎么飞，是行为不是形象',
+                   '动势|Motion', ?, 40, ?, ?)
+           ON CONFLICT(spaceId, key) DO UPDATE SET
+             labelZh = excluded.labelZh, labelEn = excluded.labelEn,
+             hintZh = excluded.hintZh, groupKey = excluded.groupKey,
+             anchorsJson = excluded.anchorsJson, updatedAt = excluded.updatedAt`,
+        )
+        .run(spaceId, JSON.stringify(['anchored', 'weighted', 'light', 'weightless']), now2, now2)
+      sqlite()
+        .prepare(`DELETE FROM design_axes WHERE spaceId = ? AND key = 'movement'`)
+        .run(spaceId)
+      sqlite().exec('COMMIT')
+    } catch (error) {
+      sqlite().exec('ROLLBACK')
+      throw error
+    }
+  } else if (existingKeys.has('movement')) {
+    // ⚠️ 没有分数但有轴定义 —— 只清理轴，不动坐标。
+    sqlite().prepare(`DELETE FROM design_axes WHERE spaceId = ? AND key = 'movement'`).run(spaceId)
+  }
+
+  // 3. 删掉已退出种子的轴定义。
+  // ⚠️ **分数行不动** —— 那是用户打的分。产品决定删轴不等于数据清理。
+  for (const key of existingKeys) {
+    // 只有「曾经是种子、现在不是」才删。用户自己加的轴（不在 SEEDED 里）一律保留。
+    if (SEEDED_AXIS_KEYS.has(key) && !seedKeys.has(key)) {
+      sqlite().prepare('DELETE FROM design_axes WHERE spaceId = ? AND key = ?').run(spaceId, key)
+    }
+  }
+
+  // 4. 更新已有轴的显示信息（标签/档位改了要跟着变）
+  const update = sqlite().prepare(
+    `UPDATE design_axes SET labelZh = ?, labelEn = ?, hintZh = ?, groupKey = ?, anchorsJson = ?, updatedAt = ?
+     WHERE spaceId = ? AND key = ?`,
+  )
+  for (const axis of MONSTER_TAXONOMY) {
+    if (!existingKeys.has(axis.key)) continue // 新增的已经插对了
     const group = groupLabel.get(axis.group)
-    insert.run(
-      `axis-${axis.key}`,
-      axis.key,
+    update.run(
       axis.labelZh,
       axis.labelEn,
       axis.hintZh,
       `${group?.labelZh ?? ''}|${group?.labelEn ?? ''}`,
       JSON.stringify(axis.anchors),
-      (order += 10),
       now,
-      now,
+      spaceId,
+      axis.key,
     )
   }
 }

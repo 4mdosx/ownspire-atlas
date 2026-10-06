@@ -426,32 +426,16 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
             </div>
           </section>
 
-          {draft.extension && (
-            <section>
-              <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">
-                怪物设计 · <span className="font-normal">taxonomy 表达不了的才放这里</span>
-              </h3>
-              <div className="space-y-2">
-                {EXTENSION_FIELDS.map((field) => (
-                  <Textarea
-                    key={field.key}
-                    aria-label={field.label}
-                    rows={2}
-                    placeholder={`${field.label} · 每行一条`}
-                    value={draft.extension![field.key].join('\n')}
-                    onChange={(event) =>
-                      setDraft({
-                        ...draft,
-                        extension: { ...draft.extension!, [field.key]: event.target.value.split('\n').map((line) => line.trim()).filter(Boolean) },
-                      })
-                    }
-                    onBlur={() => void patch({ extension: { ...draft.extension!, [field.key]: draft.extension![field.key] } })}
-                    className="text-xs"
-                  />
-                ))}
-              </div>
-            </section>
-          )}
+          {/*
+            ⚠️ **原来这里有「怪物设计」区**（招式 / 行为模式 / 前摇特征 /
+            受击反应四个结构化字段），2026-10-06 域收窄为**形象设计**时删掉了。
+
+            删的理由不是「不重要」，而是**结构化字段的唯一价值是「要按它查询」**
+            —— 表情与动作不会被查询。没有人会问「把所有前摇超过 0.5 秒的怪
+            筛出来」。而留着四个空输入框的代价是每次采集都要面对它们。
+
+            这些内容现在写进下面的 `observed` 自由文本，一行就够。
+          */}
 
           {/*
             ⭐⭐「我为什么留着它」放在观察与判断**之前**，而且样式更重。
@@ -482,6 +466,11 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
             分开不是洁癖：混在一个字段里，半年后无法分辨哪句是原作事实、
             哪句是我的解读 —— 而混在一起的判断等于没有判断（不敢改，
             因为改了对= 承认之前在编）。
+
+            ⚠️ **placeholder 全部换成视觉例子**（同日域收窄）：这个域只管形象
+            设计，所以引导语不该再拿「攻击前摇 0.5 秒」当范例 —— 那是动作
+            表现，是被砍掉的那一类。**看到什么例子就会写什么例子**；行为观察
+            不是禁止写，只是不该由界面主动邀请。
           */}
           <section>
             <h3 className="mb-1 text-xs font-semibold text-muted-foreground">

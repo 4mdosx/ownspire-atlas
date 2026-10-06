@@ -134,10 +134,20 @@ export type DesignAxis = {
 export const SPACE_SOURCE = 'source'
 export const SPACE_MINE = 'mine'
 
-export type TaxonomyDimensionKey = 'form' | 'scale' | 'movement' | 'combat' | 'role'
+/**
+ * ⭐ 维度的 key 是**空间内的自由字符串**，不是联合类型（2026-10-06）。
+ *
+ * 维度定义进数据库之后，轴的集合随空间变化 —— 所以这里不能再是
+ * `'form' | 'scale' | ...` 那种固定枚举。每加一条轴都要能直接用，不该逼着
+ * 改类型定义，而那正是「维度该归数据库管」这件事要摆脱的。
+ *
+ * ⚠️ 只在**种子**里用得上具体字符串（MONSTER_TAXONOMY）。运行时的校验靠
+ * 「这个空间实际有哪些轴」（service 层查 design_axes），不靠类型。
+ */
+export type TaxonomyDimensionKey = string
 
 /** 维度的归类 group —— 纯展示用，不进数据库。 */
-export type TaxonomyGroupKey = 'form' | 'combat'
+export type TaxonomyGroupKey = 'form' | 'motion'
 
 export type TaxonomyDimensionDef = {
   key: TaxonomyDimensionKey
@@ -166,8 +176,8 @@ export type TaxonomyGroupDef = {
 
 /** monster domain 的 group —— 展示层的归类。 */
 export const MONSTER_TAXONOMY_GROUPS: readonly TaxonomyGroupDef[] = [
-  { key: 'form', labelZh: '形态', labelEn: 'Form', hintZh: '它是什么东西、多大' },
-  { key: 'combat', labelZh: '战斗', labelEn: 'Combat', hintZh: '它怎么动、怎么打、干什么' },
+  { key: 'form', labelZh: '形态', labelEn: 'Form', hintZh: '它是什么东西、多大、长什么样' },
+  { key: 'motion', labelZh: '动势', labelEn: 'Motion', hintZh: '静止时给人的重量与姿态感' },
 ] as const
 
 /**
@@ -181,7 +191,33 @@ export const TAXONOMY_GROUPS_BY_DOMAIN: Record<DomainCode, readonly TaxonomyGrou
   monster: MONSTER_TAXONOMY_GROUPS,
 }
 
-/** monster domain 的五个维度，落在两个 group 下。 */
+/**
+ * ⭐⭐ monster domain 的维度 —— **只管形象设计**（2026-10-06 域收窄）。
+ *
+ * token 明确裁定：「主要还是关于怪物形象设计，不要全栈多维度（既关心动作表现
+ * 又关心关卡作用）」。于是砍掉两条轴：
+ *
+ * · ~~`combat` 战斗方式~~（melee/ranged/charger/zoner/summoner）
+ * · ~~`role` 定位~~（fodder/pressure/elite/boss）
+ *
+ * ⚠️ **它们不是被搬家，是被删掉。** 一个关卡里放 5 个 fodder 还是 2 个 elite，
+ * 那是**关卡设计的决定**，不是这只怪的造型属性 —— 同一只怪在不同关卡里可以是
+ * fodder 也可以是 elite，那说明「role」根本不是它的属性，而是**用法**。
+ *
+ * ⚠️ **不新建「玩法空间」**：空建一个空间就是为「不存在的第二个用途」预付成本
+ * —— 那正是本文件里明确否掉的取舍（见 §一「domain 列表不进数据库」的同款
+ * 理由）。等真的开始采集玩法素材时再建，那时它的轴才有数据支撑。
+ *
+ * ⚠️ `movement` 改名 `mobility` 并收窄档位：原来是
+ * `static/ground/jumping/flying/teleport`，后三个已经是**行为**而不是形象。
+ * 现在只留「静止时给人什么重量感」—— 这条轴量的是**视觉观感**，不是运动学。
+ * 具体的移动方式（跳跃、瞬移）属于它的**行为**，进 notes 的自由文本就够，
+ * 不该占用一条坐标轴。
+ *
+ * ⚠️ **`palette` 配色是唯一现在就加的新轴**：纯视觉、无歧义、几乎每条都能填。
+ * 其余候选（silhouette 复杂度 / 形体语言 / 装饰密度）**刻意不加** ——
+ * 凭理论造的轴 90% 会是死轴。等采到 20 条、看缺什么再说。
+ */
 export const MONSTER_TAXONOMY: readonly TaxonomyDimensionDef[] = [
   {
     key: 'form',
@@ -200,28 +236,20 @@ export const MONSTER_TAXONOMY: readonly TaxonomyDimensionDef[] = [
     hintZh: '相对同场景参照物的大小',
   },
   {
-    key: 'movement',
-    labelZh: '移动',
-    labelEn: 'Movement',
-    group: 'combat',
-    anchors: ['static', 'ground', 'jumping', 'flying', 'teleport'],
-    hintZh: '在场上怎么移动，静态算最低档',
+    key: 'palette',
+    labelZh: '配色',
+    labelEn: 'Palette',
+    group: 'form',
+    anchors: ['monochrome', 'limited', 'duotone', 'rich', 'loud'],
+    hintZh: '用色数量与对比强度 —— 造型的一部分，不是渲染细节',
   },
   {
-    key: 'combat',
-    labelZh: '战斗方式',
-    labelEn: 'Combat',
-    group: 'combat',
-    anchors: ['melee', 'ranged', 'charger', 'zoner', 'summoner'],
-    hintZh: '主要用什么手段造成伤害',
-  },
-  {
-    key: 'role',
-    labelZh: '定位',
-    labelEn: 'Role',
-    group: 'combat',
-    anchors: ['fodder', 'pressure', 'disruptor', 'tank', 'elite', 'boss'],
-    hintZh: '在编队里承担什么职能，递增',
+    key: 'mobility',
+    labelZh: '动势',
+    labelEn: 'Mobility',
+    group: 'motion',
+    anchors: ['anchored', 'weighted', 'light', 'weightless'],
+    hintZh: '静止时给人的重量感。它跳不跳、怎么飞，是行为不是形象',
   },
 ] as const
 
@@ -530,14 +558,19 @@ export type Entry = {
   updatedAt: string
 }
 
-/** monster domain 的扩展数据。1:1，外键指向 entries.id。 */
+/**
+ * monster domain 的扩展数据。1:1，外键指向 entries.id。
+ *
+ * ⚠️ **2026-10-06 起只有 entryId** —— 原来那四个行为字段
+ *（attackPattern / behaviorPattern / telegraph / reactionPattern）
+ * 在域收窄为**形象设计**时被砍掉了（见 db/schema.ts 的说明）。
+ *
+ * ⚠️ 类型保留成**只有 entryId 的对象**而不是整个删掉：它标明了「这条属于
+ * monster 库」这个分流事实，而将来真有需要时它就是新字段的落点 ——
+ * 到那时不必重新引入一层分流机制。
+ */
 export type MonsterExtension = {
   entryId: string
-  /** JSON 编码的字符串数组。未设置时是 '[]'，不是 null —— 空和未填在这个版本没有区别。 */
-  attackPattern: string[]
-  behaviorPattern: string[]
-  telegraph: string[]
-  reactionPattern: string[]
 }
 
 /**

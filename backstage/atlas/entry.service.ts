@@ -232,18 +232,18 @@ export async function getEntryDetail(id: string, spaceId = 'space-mine'): Promis
 
   const [tagMap, taxonomyMap] = await Promise.all([tagsForEntries([id]), taxonomyForEntries([id], spaceId)])
 
+  /**
+   * domain 扩展行。2026-10-06 起 monster 域的扩展表**只剩 entryId**
+   * （四个行为字段已砍，见 db/schema.ts 的说明），所以这里只判断「这条
+   * 属于 monster 库」，不再拼任何结构化内容。
+   *
+   * ⚠️ 保留这一层的意义是**分流标记**：将来 monster 真的需要某个
+   * 「taxonomy 与自由文本都表达不了」的字段时，扩展行就是它的落点。
+   */
   let extension: MonsterExtension | null = null
   if (row.domain === 'monster') {
     const [ext] = await db.select().from(monsterEntries).where(eq(monsterEntries.entryId, id)).limit(1)
-    extension = ext
-      ? {
-          entryId: ext.entryId,
-          attackPattern: parseList(ext.attackPattern),
-          behaviorPattern: parseList(ext.behaviorPattern),
-          telegraph: parseList(ext.telegraph),
-          reactionPattern: parseList(ext.reactionPattern),
-        }
-      : null
+    extension = ext ? { entryId: ext.entryId } : null
   }
 
   return {
@@ -432,13 +432,7 @@ export async function createEntry(input: CreateEntryInput): Promise<EntrySummary
   })
 
   if (domain === 'monster') {
-    await db.insert(monsterEntries).values({
-      entryId: id,
-      attackPattern: JSON.stringify(clipList(input.extension?.attackPattern)),
-      behaviorPattern: JSON.stringify(clipList(input.extension?.behaviorPattern)),
-      telegraph: JSON.stringify(clipList(input.extension?.telegraph)),
-      reactionPattern: JSON.stringify(clipList(input.extension?.reactionPattern)),
-    })
+    await db.insert(monsterEntries).values({ entryId: id })
   }
 
   // attachEntryTagsByName 是「只加不删」的合并语义 —— 它内部调
@@ -513,17 +507,10 @@ export async function updateEntry(id: string, input: UpdateEntryInput): Promise<
 
   if (input.taxonomy !== undefined) await setTaxonomy(id, input.taxonomy, input.taxonomySpaceId ?? 'space-mine')
 
-  if (input.extension !== undefined && current.domain === 'monster') {
-    await db
-      .update(monsterEntries)
-      .set({
-        attackPattern: JSON.stringify(clipList(input.extension.attackPattern)),
-        behaviorPattern: JSON.stringify(clipList(input.extension.behaviorPattern)),
-        telegraph: JSON.stringify(clipList(input.extension.telegraph)),
-        reactionPattern: JSON.stringify(clipList(input.extension.reactionPattern)),
-      })
-      .where(eq(monsterEntries.entryId, id))
-  }
+  // ⚠️ **extension 现在不承载任何数据**（2026-10-06 域收窄后monster 扩展表
+  // 只剩 entryId，见 db/schema.ts）。行为与动作观察写进 observed 自由文本。
+  // 这个分支留着的唯一理由是：将来真有「taxonomy 与自由文本都表达不了」的
+  // 字段时，扩展行就是它的落点 —— 而那时不需要重新加一层分流机制。
 
   return getEntry(id)
 }
@@ -621,7 +608,7 @@ export async function changeDomain(id: string, nextDomain: DomainCode): Promise<
     trx.update(entries).set({ domain: target, updatedAt: now }).where(eq(entries.id, id)).run()
     trx.delete(monsterEntries).where(eq(monsterEntries.entryId, id)).run()
     if (target === 'monster') {
-      trx.insert(monsterEntries).values({ entryId: id, attackPattern: '[]', behaviorPattern: '[]', telegraph: '[]', reactionPattern: '[]' }).run()
+      trx.insert(monsterEntries).values({ entryId: id }).run()
     }
   })
 
@@ -714,13 +701,8 @@ export async function entriesOrderedById(domain?: DomainCode): Promise<EntryDeta
   if (monsterIds.length > 0) {
     const extRows = await db.select().from(monsterEntries).where(inArray(monsterEntries.entryId, monsterIds))
     for (const ext of extRows) {
-      extensionMap.set(ext.entryId, {
-        entryId: ext.entryId,
-        attackPattern: parseList(ext.attackPattern),
-        behaviorPattern: parseList(ext.behaviorPattern),
-        telegraph: parseList(ext.telegraph),
-        reactionPattern: parseList(ext.reactionPattern),
-      })
+      // ⚠️ 只搬 entryId —— 扩展表现在没有别的列了（2026-06 域收窄，见 db/schema.ts）。
+      extensionMap.set(ext.entryId, { entryId: ext.entryId })
     }
   }
 

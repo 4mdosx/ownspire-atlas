@@ -157,13 +157,13 @@ async function main(): Promise<void> {
   check('0.8 存进去还是 0.8', detail.taxonomy.form === 0.8)
 
   // 20. 「没打过分」≠「0 分」
-  check('没打分的维度不在结果里', detail.taxonomy.role === undefined)
-  await setTaxonomy(tagged.id, { role: 0 })
+  check('没打分的维度不在结果里', detail.taxonomy.mobility === undefined)
+  await setTaxonomy(tagged.id, { mobility: 0 })
   const withZero = await getEntryDetail(tagged.id)
-  check('显式 0 分要与「没打过分」可区分', withZero.taxonomy.role === 0 && Object.keys(withZero.taxonomy).length === 3)
+  check('显式 0 分要与「没打过分」可区分', withZero.taxonomy.mobility === 0 && Object.keys(withZero.taxonomy).length === 3)
 
   // 21. 清除维度
-  await clearTaxonomyDimension(tagged.id, 'role')
+  await clearTaxonomyDimension(tagged.id, 'mobility')
   check('清除维度后只剩 2 个', Object.keys((await getEntryDetail(tagged.id)).taxonomy).length === 2)
 
   // 22. 陌生维度必须被拒 —— 维度定义在代码里，写入侧就能判
@@ -235,13 +235,22 @@ async function main(): Promise<void> {
       `平铺 ${all.length} · 分组 ${grouped.length}`,
     )
 
-    // 具体的归属：Scale 进 Form，Movement / Role 进 Combat
+    // ⭐ 具体的归属（2026-10-06 域收窄后）
+    // monster 域现在**只管形象设计**：combat（战斗方式）与 role（定位）被砍掉，
+    // 因为它们是**关卡玩法**而不是**造型属性**（同一只怪在不同关卡可以是
+    // fodder 也可以是 elite —— 那说明 role 是用法不是属性）。
     const groupOf = (key: string) => all.find((d) => d.key === key)?.group
-    check('scale 归入 form 组', groupOf('scale') === 'form', String(groupOf('scale')))
     check('form 归入 form 组', groupOf('form') === 'form', String(groupOf('form')))
-    check('movement 归入 combat 组', groupOf('movement') === 'combat', String(groupOf('movement')))
-    check('role 归入 combat 组', groupOf('role') === 'combat', String(groupOf('role')))
-    check('combat 归入 combat 组', groupOf('combat') === 'combat', String(groupOf('combat')))
+    check('scale 归入 form 组', groupOf('scale') === 'form', String(groupOf('scale')))
+    check('palette 归入 form 组', groupOf('palette') === 'form', String(groupOf('palette')))
+    check('mobility 归入 motion 组', groupOf('mobility') === 'motion', String(groupOf('mobility')))
+
+    // ⚠️ 这两条是「域收窄」的回归守卫 —— 它们**不该回来**，除非 token 明确
+    // 改主意要采集玩法素材。写死断言是为了让那一刻是「有意识的决定」，
+    // 而不是某次重构顺手把它们带回来。
+    check('combat 轴已砍掉（战斗方式属玩法）', !all.some((d) => d.key === 'combat'))
+    check('role 轴已砍掉（关卡定位属玩法）', !all.some((d) => d.key === 'role'))
+    check('movement 已改名为 mobility', !all.some((d) => d.key === 'movement'), all.map((d) => d.key).join(' '))
   }
 
   // 30. 档位 → score 映射（点档位词那条路径）
@@ -397,7 +406,7 @@ async function main(): Promise<void> {
       sourceUrl: 'https://example.com/dual',
     })
 
-    // ⚠️ 「我的」空间里那条轴叫 `movement` 不叫 `mobility` —— 同名轴要自己造：
+    // ⚠️ 「原作」空间那条轴叫 mobility 而「我的」空间没有同名轴 —— 所以取「我的」的轴来对比：
     // 往「我的」加一条 mobility 会污染那个空间，而测试不该留下痕迹。
     const mineAxes = await listDesignAxes(mine.id)
     const mineAxisKey = mineAxes[0]?.key ?? 'form'

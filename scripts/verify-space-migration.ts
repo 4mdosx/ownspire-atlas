@@ -94,12 +94,29 @@ async function main(): Promise<void> {
   check('预置空间不可删', mine?.isBuiltin === true && source?.isBuiltin === true)
 
   const mineAxes = await listDesignAxes(mine!.id)
-  check('「我的」带维度', mineAxes.length === 5, `${mineAxes.length} 条`)
+  check('「我的」带维度', mineAxes.length === 4, `${mineAxes.length} 条：${mineAxes.map((a) => a.key).join(' ')}`)
   check(
     '维度带完整档位',
     mineAxes.every((axis) => axis.anchors.length >= 3),
     mineAxes.map((a) => `${a.key}:${a.anchors.length}`).join(' '),
   )
+
+  // ⚠️ 域收窄的迁移断言（2026-10-06）
+  // combat / role 被砍（属玩法不属造型），movement 改名 mobility 且**分数要搬过来**。
+  const axisKeys = mineAxes.map((a) => a.key)
+  check('migration 后 combat 轴已不存在', !axisKeys.includes('combat'), axisKeys.join(' '))
+  check('migration 后 role 轴已不存在', !axisKeys.includes('role'))
+  check('movement 已改名 mobility', axisKeys.includes('mobility') && !axisKeys.includes('movement'))
+  check('新增 palette 轴', axisKeys.includes('palette'), axisKeys.join(' '))
+
+  const migratedEntry = await listEntries()
+  const rec = migratedEntry.find((entry) => entry.id === 'e-old')
+  check(
+    'movement 的分数搬到 mobility 上',
+    rec?.taxonomy?.['mobility'] === 0.5,
+    JSON.stringify(rec?.taxonomy ?? {}),
+  )
+  check('搬完后旧 key 不再出现', rec?.taxonomy?.['movement'] === undefined, String(rec?.taxonomy?.['movement']))
   check('维度带分组标签', mineAxes.every((axis) => axis.group.labelZh !== ''), mineAxes[0]?.group.labelZh ?? '')
 
   // ⚠️ **「原作」刻意是空的** —— 它的维度取决于原作是什么游戏
@@ -110,9 +127,12 @@ async function main(): Promise<void> {
   const migrated = await listEntries()
   check('旧条目还在', migrated.some((entry) => entry.id === 'e-old'), `${migrated.length} 条`)
   const old = migrated.find((entry) => entry.id === 'e-old')
+  // ⚠️ 断言里用的是 mobility 而不是 movement —— 域收窄时那条轴改了名，
+  // 而分数要跟着搬过去（syncDesignAxes 里做）。所以「迁进来」已经包含了
+  // 「改名」这一层。
   check(
-    '旧坐标迁到「我的」空间',
-    old?.taxonomy?.['scale'] === 0.83 && old?.taxonomy?.['movement'] === 0.5,
+    '旧坐标迁到「我的」空间（movement 已改名为 mobility）',
+    old?.taxonomy?.['scale'] === 0.83 && old?.taxonomy?.['mobility'] === 0.5,
     JSON.stringify(old?.taxonomy ?? {}),
   )
   check('「我的」空间读数与迁移前一致', Object.keys(old?.taxonomy ?? {}).length === 3, `${Object.keys(old?.taxonomy ?? {}).length} 条`)
@@ -127,7 +147,7 @@ async function main(): Promise<void> {
   const spaces2 = await listDesignSpaces()
   check('空间没被重复插入', spaces2.length === spaces.length, `${spaces2.length} vs ${spaces.length}`)
   const axes2 = await listDesignAxes(mine!.id)
-  check('维度没被重复插入', axes2.length === 5, `${axes2.length} 条`)
+  check('维度没被重复插入', axes2.length === 4, `${axes2.length} 条`)
   const migrated2 = await listEntries()
   check('坐标没被重复搬运', migrated2.find((e) => e.id === 'e-old')?.taxonomy?.['scale'] === 0.83)
 
