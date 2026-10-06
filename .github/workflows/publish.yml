@@ -1,0 +1,35 @@
+name: Publish image
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build image
+        run: |
+          sha="$(git rev-parse --short=7 HEAD)"
+          docker build --platform linux/amd64 \
+            --build-arg "ATLAS_VERSION=${sha}" \
+            --tag "ghcr.io/4mdosx/creative-atlas:${sha}" \
+            --tag ghcr.io/4mdosx/creative-atlas:main \
+            .
+          echo "IMAGE_SHA=${sha}" >> "$GITHUB_ENV"
+
+      - name: Push image
+        run: |
+          docker push "ghcr.io/4mdosx/creative-atlas:${IMAGE_SHA}"
+          docker push ghcr.io/4mdosx/creative-atlas:main

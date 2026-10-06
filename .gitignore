@@ -1,0 +1,21 @@
+node_modules/
+.next/
+out/
+build/
+
+# 本地数据：db 与图片都不进仓库
+local.db
+local.db-wal
+local.db-shm
+local-*.db
+local-*.db.sha256
+local-*.db.commit
+/media/*
+!/media/.gitkeep
+
+.DS_Store
+*.log
+.env
+.env.local
+next-env.d.ts
+tsconfig.tsbuildinfo
