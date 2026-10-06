@@ -105,7 +105,7 @@ export function DomainGate({ onPick }: { onPick: (domain: DomainCode) => void })
   const filtered = DOMAINS.filter((domain) => {
     const needle = query.trim().toLowerCase()
     if (!needle) return true
-    return [domain.labelZh, domain.labelEn, domain.hintZh, domain.code].some((field) => field.toLowerCase().includes(needle))
+    return [domain.labelZh, domain.labelEn, domain.hintZh, domain.creativeQuestion, domain.code].some((field) => field.toLowerCase().includes(needle))
   })
 
   return (
@@ -113,7 +113,8 @@ export function DomainGate({ onPick }: { onPick: (domain: DomainCode) => void })
       <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">第一步</p>
       <h1 className="mt-1 text-xl font-semibold">你在收集什么？</h1>
       <p className="mt-1.5 text-sm text-muted-foreground">
-        选一个库开始。以后随时能切，<span className="text-foreground">切库不会丢已有条目</span>。
+        一个 domain 研究一种创作问题，<span className="text-foreground">多个加起来才是一个完整设计</span>。
+        以后随时能切，切库不会丢已有条目。
       </p>
 
       <Input
@@ -137,7 +138,16 @@ export function DomainGate({ onPick }: { onPick: (domain: DomainCode) => void })
               <span className="block text-sm font-medium">
                 {domain.labelZh} <span className="text-xs font-normal text-muted-foreground">{domain.labelEn}</span>
               </span>
-              <span className="block text-xs text-muted-foreground">{domain.hintZh}</span>
+              {/*
+                ⭐ **问题句放在关键词之前**，而且视觉上更重（2026-10-07）。
+                它是这个 domain 的边界声明 ——「这个 domain 只研究一种创作问题」，
+                而问题是唯一能划边界的东西。名字负责好懂（放在后面），
+                问题负责准确（放在前面）。
+                ⚠️ 这也意味着**过期的 hint 会当场暴露**：如果这里写着「战斗定位」
+                而战斗定位已被砍掉，界面上就是一句不成立的话。
+              */}
+              <span className="mt-0.5 block text-xs text-foreground/80">研究{domain.creativeQuestion}</span>
+              <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{domain.hintZh}</span>
             </span>
           </button>
         ))}

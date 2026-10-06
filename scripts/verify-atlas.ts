@@ -53,17 +53,17 @@ async function main(): Promise<void> {
   fs.mkdirSync(path.join(mediaRoot, 'verify'), { recursive: true })
   fs.writeFileSync(path.join(mediaRoot, imagePath), png)
 
-  const src = 'https://example.com/monster'
-  const monster = 'monster'
+  const src = 'https://example.com/creature'
+  const creature = 'creature'
 
   console.log('\n— 未打标逻辑（v0.1 裁定，v0.2 保留）—')
 
   // 1. 无 tag 也能存
-  const untagged = await createEntry({ domain: monster, name: '无标条目', sourceUrl: src, imagePath, tagNames: [] })
+  const untagged = await createEntry({ domain: creature, name: '无标条目', sourceUrl: src, imagePath, tagNames: [] })
   check('无 tag 也能创建条目', untagged.tags.length === 0, `id=${untagged.id}`)
 
   // 2. 有 tag 也能存
-  const tagged = await createEntry({ domain: monster, name: '有标条目', sourceUrl: src, imagePath, tagNames: ['blob', 'small'] })
+  const tagged = await createEntry({ domain: creature, name: '有标条目', sourceUrl: src, imagePath, tagNames: ['blob', 'small'] })
   check('有 tag 也能创建', tagged.tags.length === 2, tagged.tags.map((tag) => tag.name).join(','))
 
   // 3. untagged 筛选只返回无标的那条
@@ -151,19 +151,19 @@ async function main(): Promise<void> {
   check('半星只给 6 个可点值', TAXONOMY_STEPS.length === 6, '5 星 + 半星 ≠ 11 档')
 
   // 19. taxonomy 是 sparse 的 —— 没打分的维度不出现
-  await setTaxonomy(tagged.id, { form: 0.8, scale: 0.4 })
+  await setTaxonomy(tagged.id, { visualMass: 0.8, shapeLanguage: 0.4 })
   const detail = await getEntryDetail(tagged.id)
   check('taxonomy 只存给了的维度', Object.keys(detail.taxonomy).length === 2, JSON.stringify(detail.taxonomy))
-  check('0.8 存进去还是 0.8', detail.taxonomy.form === 0.8)
+  check('0.8 存进去还是 0.8', detail.taxonomy.visualMass === 0.8)
 
   // 20. 「没打过分」≠「0 分」
-  check('没打分的维度不在结果里', detail.taxonomy.mobility === undefined)
-  await setTaxonomy(tagged.id, { mobility: 0 })
+  check('没打分的维度不在结果里', detail.taxonomy.familiarity === undefined)
+  await setTaxonomy(tagged.id, { threatAffinity: 0 })
   const withZero = await getEntryDetail(tagged.id)
-  check('显式 0 分要与「没打过分」可区分', withZero.taxonomy.mobility === 0 && Object.keys(withZero.taxonomy).length === 3)
+  check('显式 0 分要与「没打过分」可区分', withZero.taxonomy.threatAffinity === 0 && Object.keys(withZero.taxonomy).length === 3)
 
   // 21. 清除维度
-  await clearTaxonomyDimension(tagged.id, 'mobility')
+  await clearTaxonomyDimension(tagged.id, 'threatAffinity')
   check('清除维度后只剩 2 个', Object.keys((await getEntryDetail(tagged.id)).taxonomy).length === 2)
 
   // 22. 陌生维度必须被拒 —— 维度定义在代码里，写入侧就能判
@@ -180,26 +180,26 @@ async function main(): Promise<void> {
   check('monster 条目自动建扩展行', detail.extension !== null)
 
   // 24. domain 筛选
-  check('domain=monster 筛出两条', (await listEntries({ domain: monster })).length === 2)
+  check('domain=creature 筛出两条', (await listEntries({ domain: creature })).length === 2)
   check('domain=未知名不报错且返回空', (await listEntries({ domain: 'nope' as never })).length === 0)
 
   // 25. 换 domain 会丢弃不兼容的打分
-  await changeDomain(tagged.id, 'monster')
-  check('换到同domain 是幂等的', (await getEntryDetail(tagged.id)).domain === monster)
+  await changeDomain(tagged.id, 'creature')
+  check('换到同domain 是幂等的', (await getEntryDetail(tagged.id)).domain === creature)
 
   // 26. imagePath 可空
-  const noImage = await createEntry({ domain: monster, name: '无图条目', sourceUrl: src })
+  const noImage = await createEntry({ domain: creature, name: '无图条目', sourceUrl: src })
   check('没有图片也能创建', noImage.imagePath === '', `imagePath="${noImage.imagePath}"`)
 
   // 27. 拒绝绝对路径 / ..
   try {
-    await createEntry({ domain: monster, name: '坏路径', sourceUrl: src, imagePath: '/etc/passwd' })
+    await createEntry({ domain: creature, name: '坏路径', sourceUrl: src, imagePath: '/etc/passwd' })
     check('绝对路径应被拒绝', false, '居然没报错')
   } catch (error) {
     check('绝对路径应被拒绝', true, error instanceof Error ? error.message : '')
   }
   try {
-    await createEntry({ domain: monster, name: '穿越路径', sourceUrl: src, imagePath: '../../etc/passwd' })
+    await createEntry({ domain: creature, name: '穿越路径', sourceUrl: src, imagePath: '../../etc/passwd' })
     check('.. 穿越应被拒绝', false, '居然没报错')
   } catch (error) {
     check('.. 穿越应被拒绝', true, error instanceof Error ? error.message : '')
@@ -207,7 +207,7 @@ async function main(): Promise<void> {
 
   // 28. 来源强制
   try {
-    await createEntry({ domain: monster, name: '无来源', sourceUrl: '' })
+    await createEntry({ domain: creature, name: '无来源', sourceUrl: '' })
     check('缺来源应被拒绝', false, '居然没报错')
   } catch (error) {
     check('缺来源应被拒绝', true, error instanceof Error ? error.message : '')
@@ -218,17 +218,17 @@ async function main(): Promise<void> {
   // —— 渲染是按 group 遍历维度的，漏声明就是静默丢失。
   {
     const { dimensionsOf, groupsOf, dimensionsInGroup } = atlas
-    const groupKeys = new Set(groupsOf(monster).map((group) => group.key))
-    const all = dimensionsOf(monster)
+    const groupKeys = new Set(groupsOf(creature).map((group) => group.key))
+    const all = dimensionsOf(creature)
     const orphans = all.filter((dimension) => !groupKeys.has(dimension.group))
     check('所有维度都有归属 group', orphans.length === 0, orphans.map((d) => d.key).join(',') || '无孤儿')
 
     // 反向：group 声明了但没有维度
-    const emptyGroups = groupsOf(monster).filter((group) => dimensionsInGroup(monster, group.key).length === 0)
+    const emptyGroups = groupsOf(creature).filter((group) => dimensionsInGroup(creature, group.key).length === 0)
     check('没有空 group', emptyGroups.length === 0, emptyGroups.map((g) => g.key).join(',') || '无空组')
 
     // 分组后的维度总数必须与平铺一致 —— 证明分组是纯归类，没有漏也没有重
-    const grouped = groupsOf(monster).flatMap((group) => [...dimensionsInGroup(monster, group.key)])
+    const grouped = groupsOf(creature).flatMap((group) => [...dimensionsInGroup(creature, group.key)])
     check(
       '分组不重不漏',
       grouped.length === all.length && new Set(grouped.map((d) => d.key)).size === all.length,
@@ -236,21 +236,30 @@ async function main(): Promise<void> {
     )
 
     // ⭐ 具体的归属（2026-10-06 域收窄后）
-    // monster 域现在**只管形象设计**：combat（战斗方式）与 role（定位）被砍掉，
+    // creature 域现在**只管形象设计**：combat（战斗方式）与 role（定位）被砍掉，
     // 因为它们是**关卡玩法**而不是**造型属性**（同一只怪在不同关卡可以是
     // fodder 也可以是 elite —— 那说明 role 是用法不是属性）。
     const groupOf = (key: string) => all.find((d) => d.key === key)?.group
-    check('form 归入 form 组', groupOf('form') === 'form', String(groupOf('form')))
-    check('scale 归入 form 组', groupOf('scale') === 'form', String(groupOf('scale')))
-    check('palette 归入 form 组', groupOf('palette') === 'form', String(groupOf('palette')))
-    check('mobility 归入 motion 组', groupOf('mobility') === 'motion', String(groupOf('mobility')))
+    check('visualMass 归入 form 组', groupOf('visualMass') === 'form', String(groupOf('visualMass')))
+    check('proportion 归入 form 组', groupOf('proportion') === 'form', String(groupOf('proportion')))
+    check('shapeLanguage 归入 form 组', groupOf('shapeLanguage') === 'form', String(groupOf('shapeLanguage')))
+    check('visualComplexity 归入 form 组', groupOf('visualComplexity') === 'form', String(groupOf('visualComplexity')))
+    check('familiarity 归入 read 组', groupOf('familiarity') === 'read', String(groupOf('familiarity')))
+    check('threatAffinity 归入 read 组', groupOf('threatAffinity') === 'read', String(groupOf('threatAffinity')))
 
     // ⚠️ 这两条是「域收窄」的回归守卫 —— 它们**不该回来**，除非 token 明确
     // 改主意要采集玩法素材。写死断言是为了让那一刻是「有意识的决定」，
     // 而不是某次重构顺手把它们带回来。
     check('combat 轴已砍掉（战斗方式属玩法）', !all.some((d) => d.key === 'combat'))
     check('role 轴已砍掉（关卡定位属玩法）', !all.some((d) => d.key === 'role'))
-    check('movement 已改名为 mobility', !all.some((d) => d.key === 'movement'), all.map((d) => d.key).join(' '))
+    // ⚠️ 下面三条是「分类不是刻度」的回归守卫（2026-10-07）：
+    // · form 降级成 tag 分组（Blob / Biped / Quadruped 那些参照系）
+    // · palette 改成 observed 里的观察项
+    // · mobility 划给 Animation domain（造型回答「静止时什么质感」，
+    //   动作回答「动起来什么质感」，是两个问题）
+    check('form 轴已降级成 tag 分组', !all.some((d) => d.key === 'form'), all.map((d) => d.key).join(' '))
+    check('palette 轴已改成观察项', !all.some((d) => d.key === 'palette'))
+    check('mobility 轴已划给 Animation domain', !all.some((d) => d.key === 'mobility'))
   }
 
   // 30. 档位 → score 映射（点档位词那条路径）
@@ -275,8 +284,8 @@ async function main(): Promise<void> {
   // 31. 不属于该 domain 的维度应被写入侧拒绝
   {
     const { isDimensionOf } = atlas
-    check('form 维度属于 monster', isDimensionOf(monster, 'form'))
-    check('不存在的维度被拒', !isDimensionOf(monster, 'nope'))
+    check('visualMass 维度属于 creature', isDimensionOf(creature, 'visualMass'))
+    check('不存在的维度被拒', !isDimensionOf(creature, 'nope'))
   }
 
   // 32. ⭐ 观察与判断严格分离（2026-10-06）
@@ -284,7 +293,7 @@ async function main(): Promise<void> {
   // 「两个字段都存得下」，而是「写 observed 不会碰到 read」。
   {
     const split = await createEntry({
-      domain: monster,
+      domain: creature,
       name: '观察与判断',
       sourceUrl: 'https://example.com/split',
       observed: '攻击前身体膨胀约 0.5 秒',
@@ -313,7 +322,7 @@ async function main(): Promise<void> {
 
     // 旧的 notes 调用方式应落到 observed（导入包兼容），而不是被丢弃
     const legacy = await createEntry({
-      domain: monster,
+      domain: creature,
       name: '旧调用方',
       sourceUrl: 'https://example.com/legacy',
       notes: '通过 notes 传进来的内容',
@@ -337,11 +346,11 @@ async function main(): Promise<void> {
   // 34. ⭐ tag 的 group 命名空间（2026-10-06）
   {
     const { createTag, findTagByName, listTags } = tagService
-    const tagged = await createTag('charger', 'primitive')
-    check('建 tag 时带命名空间', tagged.group === 'primitive', tagged.group)
+    const tagged = await createTag('animal:cat', 'motif')
+    check('建 tag 时带命名空间', tagged.group === 'motif', tagged.group)
 
-    const found = await findTagByName('charger')
-    check('读出来的 tag 保留命名空间', found?.group === 'primitive', String(found?.group))
+    const found = await findTagByName('animal:cat')
+    check('读出来的 tag 保留命名空间', found?.group === 'motif', String(found?.group))
 
     // ⚠️ 未归类的 tag 必须能用 —— 归类不强制，随手记的频次远高于归类的需要
     const ungrouped = await createTag('随手记的')
@@ -352,7 +361,7 @@ async function main(): Promise<void> {
 
     // ⚠️ 同一个名字不能建两次（唯一约束），也不该被悄悄改组
     try {
-      await createTag('charger')
+      await createTag('animal:cat')
       check('重名 tag 应被拒', false, '居然建成功了')
     } catch (error) {
       check('重名 tag 应被拒', true, error instanceof Error ? error.message : '')
@@ -360,16 +369,16 @@ async function main(): Promise<void> {
 
     // 改归类：能改、能改回空串
     const { setTagGroup } = tagService
-    const regrouped = await setTagGroup('charger', 'visual')
-    check('改归类生效', regrouped.group === 'visual', regrouped.group)
-    const reread = await findTagByName('charger')
-    check('改归类持久化', reread?.group === 'visual', String(reread?.group))
+    const regrouped = await setTagGroup('animal:cat', 'form')
+    check('改归类生效', regrouped.group === 'form', regrouped.group)
+    const reread = await findTagByName('animal:cat')
+    check('改归类持久化', reread?.group === 'form', String(reread?.group))
 
-    const cleared = await setTagGroup('charger', '')
+    const cleared = await setTagGroup('animal:cat', '')
     check('归类可取消', cleared.group === '', JSON.stringify(cleared.group))
 
     try {
-      await setTagGroup('不存在的词', 'visual')
+      await setTagGroup('不存在的词', 'motif')
       check('改不存在的 tag 应被拒', false, '居然没报错')
     } catch (error) {
       check('改不存在的 tag 应被拒', true, error instanceof Error ? error.message : '')
@@ -394,41 +403,42 @@ async function main(): Promise<void> {
     // 为了证明「同名也不会互相覆盖」。
     await createDesignAxis({
       spaceId: source.id,
-      key: 'mobility',
-      labelZh: '移动性',
-      anchors: ['不动', '缓慢', '快速', '瞬移'],
+      key: 'visualMass',
+      labelZh: '视觉体量',
+      anchors: ['微型', '标准', '大型', '巨型'],
     })
     check('「原作」空间可以有轴', (await listDesignAxes(source.id)).length === 1)
 
     const subject = await createEntry({
-      domain: monster,
+      domain: creature,
       name: '同名轴测试',
       sourceUrl: 'https://example.com/dual',
     })
 
-    // ⚠️ 「原作」空间那条轴叫 mobility 而「我的」空间没有同名轴 —— 所以取「我的」的轴来对比：
-    // 往「我的」加一条 mobility 会污染那个空间，而测试不该留下痕迹。
+    // ⚠️ 两个空间**各有一条叫 visualMass 的轴**，但它们是各自空间独立定义的 ——
+    // 这正是要验的：同名轴在不同空间里互不覆盖。
     const mineAxes = await listDesignAxes(mine.id)
-    const mineAxisKey = mineAxes[0]?.key ?? 'form'
-    await setTaxonomy(subject.id, { [mineAxisKey]: 0.2 }, mine.id)
-    await setTaxonomy(subject.id, { mobility: 0.8 }, source.id)
+    const sharedKey = 'visualMass'
+    check('「我的」空间有 visualMass 轴', mineAxes.some((axis) => axis.key === sharedKey), mineAxes.map((a) => a.key).join(' '))
+    await setTaxonomy(subject.id, { [sharedKey]: 0.2 }, mine.id)
+    await setTaxonomy(subject.id, { visualMass: 0.8 }, source.id)
 
     // ⭐ 核心断言：两个空间的同名轴分数必须都在，且不相等
     const mineScores = await getEntryDetail(subject.id, mine.id)
     const sourceScores = await getEntryDetail(subject.id, source.id)
-    check('「我的」空间读到自己的分', mineScores.taxonomy[mineAxisKey] === 0.2, `${mineAxisKey}=${String(mineScores.taxonomy[mineAxisKey])}`)
-    check('「原作」空间读到自己的分', sourceScores.taxonomy['mobility'] === 0.8, String(sourceScores.taxonomy['mobility']))
-    check('「我的」空间不含「原作」的 mobility 轴', mineScores.taxonomy['mobility'] === undefined, String(mineScores.taxonomy['mobility']))
-    check('「原作」空间不含「我的」的轴', sourceScores.taxonomy[mineAxisKey] === undefined, String(sourceScores.taxonomy[mineAxisKey]))
+    check('「我的」空间读到自己的分', mineScores.taxonomy[sharedKey] === 0.2, `${sharedKey}=${String(mineScores.taxonomy[sharedKey])}`)
+    check('「原作」空间读到自己的分', sourceScores.taxonomy['visualMass'] === 0.8, String(sourceScores.taxonomy['visualMass']))
+    // ⭐ 这条才是整个测试的意义：同名轴各自的值都在，没有互相覆盖
+    check('同名轴在两个空间互不覆盖', mineScores.taxonomy[sharedKey] !== sourceScores.taxonomy['visualMass'], `我的=${String(mineScores.taxonomy[sharedKey])} 原作=${String(sourceScores.taxonomy['visualMass'])}`)
 
     // 清除也要按空间隔离
-    await clearTaxonomyDimension(subject.id, 'mobility', source.id)
+    await clearTaxonomyDimension(subject.id, 'visualMass', source.id)
     const afterClear = await getEntryDetail(subject.id, mine.id)
-    check('清「原作」的轴不动「我的」', afterClear.taxonomy[mineAxisKey] === 0.2, String(afterClear.taxonomy[mineAxisKey]))
+    check('清「原作」的轴不动「我的」', afterClear.taxonomy[sharedKey] === 0.2, String(afterClear.taxonomy[sharedKey]))
 
     // 未知空间应被拒 —— 空间 id 是外键，db 会拦，但错误信息要可读
     try {
-      await setTaxonomy(subject.id, { mobility: 0.5 }, 'space-nope')
+      await setTaxonomy(subject.id, { visualMass: 0.5 }, 'space-nope')
       check('不存在的空间应被拒', false, '居然没报错')
     } catch (error) {
       check('不存在的空间应被拒', true, error instanceof Error ? error.message.slice(0, 40) : '')
@@ -448,7 +458,7 @@ async function main(): Promise<void> {
     const codeOf = new Map(spaces.map((s) => [s.id, s.code]))
     const mineByCode = all[codeOf.get(mine.id) ?? '']
     check('allScoresOf 按空间分组', Boolean(mineByCode), JSON.stringify(Object.keys(all)))
-    check('allScoresOf 里的值正确', mineByCode?.[mineAxisKey] === 0.2, String(mineByCode?.[mineAxisKey]))
+    check('allScoresOf 里的值正确', mineByCode?.[sharedKey] === 0.2, String(mineByCode?.[sharedKey]))
 
     // 项目空间可自建，code 校验要挡住非法值
     const proj = await createDesignSpace({ code: 'project-mr', labelZh: 'Maple Rouge', hintZh: '项目坐标系' })
@@ -461,6 +471,37 @@ async function main(): Promise<void> {
       check('非法 code 应被拒', true, error instanceof Error ? error.message : '')
     }
     check('findSpaceByCode 按 code 查', (await findSpaceByCode('project-mr'))?.id === proj.id)
+  }
+
+  // 36. ⭐ 分析确定度：proposal 与 committed 不能混着用（2026-10-07）
+  // 只 4 条 —— 那条原则的要点就这四个：默认 committed、显式 draft、
+  // 非法值被拒、改后生效。刻意不铺开测。
+  {
+    const manual = await createEntry({ domain: creature, name: '手工采集', sourceUrl: 'https://example.com/manual' })
+    check('默认是 committed（v0 全手工填）', manual.analysisStatus === 'committed', manual.analysisStatus)
+
+    const machine = await createEntry({
+      domain: creature,
+      name: '机器提案',
+      sourceUrl: 'https://example.com/machine',
+      analysisStatus: 'draft',
+    })
+    check('机器填的可显式标为 draft', machine.analysisStatus === 'draft', machine.analysisStatus)
+
+    try {
+      await createEntry({
+        domain: creature,
+        name: '非法状态',
+        sourceUrl: 'https://example.com/bad',
+        analysisStatus: 'guessed' as never,
+      })
+      check('非法 analysisStatus 应被拒', false, '居然建成功了')
+    } catch (error) {
+      check('非法 analysisStatus 应被拒', true, error instanceof Error ? error.message : '')
+    }
+
+    await updateEntry(machine.id, { analysisStatus: 'committed' })
+    check('draft 可改成 committed（人确认过）', (await getEntryDetail(machine.id)).analysisStatus === 'committed')
   }
 
   await db.closeDatabase()

@@ -6,7 +6,7 @@ import { getDatabase } from '@/backstage/db/database'
 import { entries, entryTags, entryTaxonomy, importIdMap, monsterEntries, tags } from '@/backstage/db/schema'
 import { attachEntryTagsByName, findOrCreateTag, tagsForEntries } from './tag.service'
 import { listDesignAxes, listDesignSpaces } from './space.service'
-import { ENTRY_STATUSES, isDomainCode, type DomainCode, type EntryDetail, type EntryStatus, type EntrySummary, type ImageSource, type MonsterExtension, type TagOrigin, type TaxonomyDimensionKey } from '@/types/atlas'
+import { ANALYSIS_STATUSES, ENTRY_STATUSES, isAnalysisStatus, isDomainCode, normalizeDomainCode, type AnalysisStatus, type DomainCode, type EntryDetail, type EntryStatus, type EntrySummary, type ImageSource, type MonsterExtension, type TagOrigin, type TaxonomyDimensionKey } from '@/types/atlas'
 
 const MAX_NAME = 120
 const MAX_URL = 2000
@@ -31,6 +31,11 @@ function mapEntry(
     ...row,
     domain: row.domain as DomainCode,
     status: row.status as EntryStatus,
+    // ⚠️ 库里的值是文本，类型系统看不见它只有三个合法值 —— 所以这里
+    // **兜底成 committed** 而不是断言。脏值当成「已定稿」比当成别的更安全？
+    // 不对：当成 committed 会让未确认的数据参与筛选。所以兜底成 **draft** ——
+    // 保守的方向是「先不进筛选」，而草稿值不该被当成已确认。
+    analysisStatus: ANALYSIS_STATUSES.includes(row.analysisStatus as AnalysisStatus) ? (row.analysisStatus as AnalysisStatus) : 'draft',
     imageSource: row.imageSource as ImageSource,
     // ⚠️ `notes` 是已废弃的别名。读的时候 observed 优先，为空才回退到 notes ——
     // 这样即使有行是补列之前写的、observed 还是空，界面也不会突然空掉。
@@ -45,9 +50,23 @@ function assertStatus(value: unknown): EntryStatus {
   throw new Error(`状态只能是 ${ENTRY_STATUSES.join(' / ')}`)
 }
 
+/**
+ * 分析确定度。⚠️ **非法值不兜底成 committed** —— 那会让未确认的数据参与筛选。
+ * 显式报错让人知道「你传了个不存在的状态」。
+ */
+function assertAnalysisStatus(value: unknown): AnalysisStatus {
+  const raw = String(value ?? '').trim()
+  if (!isAnalysisStatus(raw)) throw new Error(`未知的分析状态：${raw || '空'}（只能是 ${ANALYSIS_STATUSES.join(' / ')}）`)
+  return raw
+}
+
 function assertDomain(value: unknown): DomainCode {
-  const code = String(value ?? '').trim()
-  if (!isDomainCode(code)) throw new Error(`未知的采集类型：${code || '空'}`)
+  const raw = String(value ?? '').trim()
+  // ⚠️ 走归一化：`monster` 已被改名 `creature`（2026-10-07），而旧库里的
+  // entries.domain 与旧导出包里还是旧值。**认旧名、返回新名** ——
+  // 改的是「我们怎么称呼它」，不是「历史数据变成非法」。
+  const code = normalizeDomainCode(raw)
+  if (!isDomainCode(code)) throw new Error(`未知的采集类型：${raw || '空'}`)
   return code
 }
 
@@ -117,6 +136,14 @@ export type CreateEntryInput = {
   /** @deprecated 合并到 observed。仅保留供旧调用方与导入包兼容。 */
   notes?: string
   status?: EntryStatus
+  /**
+   * ⭐ 分析确定度（2026-10-07）。默认 `committed`。
+   *
+   * ⚠️ **机器填充坐标时必须显式传 `draft`** —— 那是提案，不是我的判断。
+   * 不传而让默认值兜着，看起来省事，实际上是让机器的猜测混进「我确认过的
+   * 判断」里，而半年后没人分得清。
+   */
+  analysisStatus?: AnalysisStatus
   tagNames?: string[]
   /** 部分 Record，只写打过的维度。没给的维度不入库。 */
   taxonomy?: Partial<Record<string, number>>
@@ -241,7 +268,7 @@ export async function getEntryDetail(id: string, spaceId = 'space-mine'): Promis
    * 「taxonomy 与自由文本都表达不了」的字段时，扩展行就是它的落点。
    */
   let extension: MonsterExtension | null = null
-  if (row.domain === 'monster') {
+  if (row.domain === 'creature') {
     const [ext] = await db.select().from(monsterEntries).where(eq(monsterEntries.entryId, id)).limit(1)
     extension = ext ? { entryId: ext.entryId } : null
   }
@@ -427,11 +454,13 @@ export async function createEntry(input: CreateEntryInput): Promise<EntrySummary
     read: clip(input.read, MAX_TEXT),
     worthwhileBecause: clip(input.worthwhileBecause, MAX_TEXT),
     status: input.status ? assertStatus(input.status) : 'inbox',
+    // ⚠️ 默认 committed —— v0 全是手工填的，没人确认等于已确认。
+    analysisStatus: input.analysisStatus ? assertAnalysisStatus(input.analysisStatus) : 'committed',
     createdAt: now,
     updatedAt: now,
   })
 
-  if (domain === 'monster') {
+  if (domain === 'creature') {
     await db.insert(monsterEntries).values({ entryId: id })
   }
 
@@ -467,6 +496,7 @@ export async function updateEntry(id: string, input: UpdateEntryInput): Promise<
   if (input.read !== undefined) updates.read = clip(input.read, MAX_TEXT)
   if (input.worthwhileBecause !== undefined) updates.worthwhileBecause = clip(input.worthwhileBecause, MAX_TEXT)
   if (input.status !== undefined) updates.status = assertStatus(input.status)
+  if (input.analysisStatus !== undefined) updates.analysisStatus = assertAnalysisStatus(input.analysisStatus)
 
   await db.update(entries).set(updates).where(eq(entries.id, id))
 
@@ -607,7 +637,7 @@ export async function changeDomain(id: string, nextDomain: DomainCode): Promise<
   db.transaction((trx) => {
     trx.update(entries).set({ domain: target, updatedAt: now }).where(eq(entries.id, id)).run()
     trx.delete(monsterEntries).where(eq(monsterEntries.entryId, id)).run()
-    if (target === 'monster') {
+    if (target === 'creature') {
       trx.insert(monsterEntries).values({ entryId: id }).run()
     }
   })
@@ -695,7 +725,7 @@ export async function entriesOrderedById(domain?: DomainCode): Promise<EntryDeta
 
   const ids = rows.map((row) => row.id)
   const [tagMap, taxonomyMap] = await Promise.all([tagsForEntries(ids), taxonomyForEntries(ids)])
-  const monsterIds = rows.filter((row) => row.domain === 'monster').map((row) => row.id)
+  const monsterIds = rows.filter((row) => row.domain === 'creature').map((row) => row.id)
 
   const extensionMap = new Map<string, MonsterExtension>()
   if (monsterIds.length > 0) {

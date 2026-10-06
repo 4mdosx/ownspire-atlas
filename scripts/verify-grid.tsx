@@ -29,7 +29,7 @@ async function main(): Promise<void> {
 
   const entry = {
     id: 'e1',
-    domain: 'monster' as const,
+    domain: 'creature' as const,
     name: 'Tutorial Jr. Sentinel',
     sourceUrl: 'https://example.com/x',
     sourceTitle: '',
@@ -41,12 +41,13 @@ async function main(): Promise<void> {
     read: '用silhouette 变化给玩家 telegraph',
     worthwhileBecause: '极简蓄力建立高 commitment',
     status: 'inbox' as const,
+    analysisStatus: 'committed' as const,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     tags: [
-      { id: 't1', name: 'boss', group: 'role' as const, createdAt: '', updatedAt: '', origin: 'user' as const, ruleId: '' },
-      { id: 't2', name: 'ground', group: 'primitive' as const, createdAt: '', updatedAt: '', origin: 'user' as const, ruleId: '' },
-      { id: 't3', name: 'flying', group: 'primitive' as const, createdAt: '', updatedAt: '', origin: 'user' as const, ruleId: '' },
+      { id: 't1', name: 'biped', group: 'form' as const, createdAt: '', updatedAt: '', origin: 'user' as const, ruleId: '' },
+      { id: 't2', name: 'animal:cat', group: 'motif' as const, createdAt: '', updatedAt: '', origin: 'user' as const, ruleId: '' },
+      { id: 't3', name: 'wing', group: 'feature' as const, createdAt: '', updatedAt: '', origin: 'user' as const, ruleId: '' },
     ],
     taxonomy: { scale: 0.83, form: 0.33 },
   }
@@ -74,13 +75,13 @@ async function main(): Promise<void> {
 
   // 4. sm 档省地方：tag 只留 1 个（3 个 tag 时不该全渲染）
   const smHtml = renderToStaticMarkup(<EntryGrid entries={[entry]} onSelect={() => {}} size="sm" />)
-  const shownTags = (smHtml.match(/>[a-z]+</g) ?? []).filter((t) => ['>boss<', '>ground<', '>flying<'].includes(t))
+  const shownTags = (smHtml.match(/>[a-z:]+</g) ?? []).filter((t) => ['>biped<', '>animal:cat<', '>wing<'].includes(t))
   check('sm 档 tag 只留 1 个', shownTags.length === 1, `实际渲染 ${shownTags.length} 个`)
   check('sm 档显示 +N 提示', smHtml.includes('+2'), '没找到 +2')
 
   // 5. md/lg 档保留 3 个 tag
   const mdHtml = renderToStaticMarkup(<EntryGrid entries={[entry]} onSelect={() => {}} size="md" />)
-  const mdTags = ['>boss<', '>ground<', '>flying<'].filter((t) => mdHtml.includes(t))
+  const mdTags = ['>biped<', '>animal:cat<', '>wing<'].filter((t) => mdHtml.includes(t))
   check('md 档 tag 保留 3 个', mdTags.length === 3, `实际 ${mdTags.length} 个`)
 
   // 6. sm 档字更小（text-[10px] -> text-[9px]）

@@ -479,7 +479,7 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
             <Textarea
               aria-label="观察"
               rows={5}
-              placeholder="攻击前身体膨胀约 0.5 秒&#10;轮廓是圆形菌盖，占据大部分视觉&#10;移动方式是周期性跳跃"
+              placeholder="剪影：一团圆形，占画面下半&#10;主形体：菌盖 + 短柄&#10;次形体：无&#10;识别特征：盖面斑点&#10;色结构：三色，橙主棕辅&#10;风格化：偏写实，只做了轮廓简化"
               value={draft.observed}
               onChange={(event) => setDraft({ ...draft, observed: event.target.value })}
               onBlur={() => draft.observed !== entry.observed && void patch({ observed: draft.observed })}
@@ -494,7 +494,7 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
             <Textarea
               aria-label="判断"
               rows={4}
-              placeholder="用 silhouette 变化给玩家 telegraph&#10;移动方式本身就是角色性格"
+              placeholder="剪影够单纯，不加装饰也能一眼认出&#10;低重心 + 圆形 = 看起来不好惹，但配色又不吓人&#10;三色限制让动画成本压得住"
               value={draft.read}
               onChange={(event) => setDraft({ ...draft, read: event.target.value })}
               onBlur={() => draft.read !== entry.read && void patch({ read: draft.read })}

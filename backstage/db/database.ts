@@ -85,6 +85,7 @@ function ensureSchema(): void {
       worthwhileBecause TEXT NOT NULL DEFAULT '',
       notes TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'inbox',
+      analysisStatus TEXT NOT NULL DEFAULT 'committed',
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     );
@@ -167,11 +168,37 @@ function ensureSchema(): void {
   `)
   addMissingColumns()
   migrateLegacyMonsterEntries()
+  migrateDomainRename()
   dropBehaviorColumns()
   migrateTaxonomySpace()
   seedDesignSpaces()
   syncDesignAxes()
   schemaVersionApplied = SCHEMA_VERSION
+}
+
+/**
+ * ⭐ `entries.domain` 的 code 改名：`monster` → `creature`（2026-10-07）。
+ *
+ * ⚠️ 为什么改：domain 从「分类」变成「**一个创作问题**」（见 types/atlas.ts
+ * 的注释）。而 `monster` 这个名字在我们自己的对话里已经被用成「完整设计」的
+ * 意思了 —— combat / encounter 都属于 monster design。**叫 monster 会让边界
+ * 迟早重新膨胀**，因为看到这个名字就会觉得「战斗相关的东西也该放进来」。
+ *
+ * ⚠️ **`monster` 的向后兼容是刻意的**：monster_entries 表沿用旧名，且
+ * DOMAIN_ALIASES 里保留映射 —— 读的时候两个 code 都认，所以旧导出包与旧脚本
+ * 不会突然失效。**改名的是「我们怎么称呼它」，不是「历史数据变成非法」。**
+ *
+ * ⚠️ 迁移只UPDATE 值，不动结构。而 `entries.domain` 上可能有个索引
+ * （entries_domain_idx），UPDATE 会自动维护它。
+ */
+const DOMAIN_RENAMES: ReadonlyArray<{ from: string; to: string }> = [{ from: 'monster', to: 'creature' }]
+
+function migrateDomainRename(): void {
+  for (const { from, to } of DOMAIN_RENAMES) {
+    const count = sqlite().prepare('SELECT count(*) AS n FROM entries WHERE domain = ?').get(from) as { n: number }
+    if (count.n === 0) continue
+    sqlite().prepare('UPDATE entries SET domain = ? WHERE domain = ?').run(to, from)
+  }
 }
 
 /**
@@ -348,16 +375,35 @@ function seedDesignSpaces(): void {
  * 的一部分、现在不在了」的：`SEEDED_AXIS_KEYS` 里记着历史 key。
  */
 const SEEDED_AXIS_KEYS: ReadonlySet<string> = new Set([
-  // 当前种子
+  // 当前种子（六根视觉轴，2026-10-07）
+  'visualMass',
+  'proportion',
+  'shapeLanguage',
+  'visualComplexity',
+  'familiarity',
+  'threatAffinity',
+  // 域收窄时退出种子（2026-10-06）：combat / role 属玩法不属造型，砍掉
+  'combat',
+  'role',
+  // 「分类不是刻度」的修正（2026-10-07）：form 降级成 tag 分组、palette 改成
+  // 观察项、mobility 划给 Animation domain。⚠️ 三条里有两条（form / scale）
+  // 曾经打过分，所以仍然搬：删了重建会丢用户已打的分。
   'form',
   'scale',
   'palette',
   'mobility',
-  // 已退出种子（2026-10-06 域收窄）：movement 改名成 mobility，combat/role 砍掉
+  // 更早的：movement 是 mobility 的前身
   'movement',
-  'combat',
-  'role',
 ])
+
+/**
+ * 退役轴 → 现役轴的分数搬家映射。
+ *
+ * ⚠️ **只有语义仍然成立的关系才写在这里。** `form` / `palette` / `mobility`
+ * 刻意不在表里 —— 它们被降级成 tag / 观察项 / 划给别的 domain，把它们的分塞进
+ * 某个新轴等于伪造一次用户没做过的判断。
+ */
+const AXIS_MOVES: ReadonlyArray<readonly [string, string]> = [['scale', 'visualMass']]
 
 function syncDesignAxes(): void {
   // ⚠️ 从 types/atlas.ts import 而不是把定义搬进 database.ts：
@@ -399,47 +445,40 @@ function syncDesignAxes(): void {
     }
   }
 
-  // 2. 改名：movement → mobility（2026-10-06 域收窄时的唯一一次轴改名）
+  // 2. 搬迁退役轴的用户分数（2026-10-07）
   //
-  // ⚠️ **分数的搬迁不依赖「库里有没有那条轴」**，只看坐标行里有没有那个 key。
-  // 理由：轴表可能是全新的（migrateTaxonomySpace 刚建出来），而坐标行是用户
-  // 真打过的分 —— 那种情况下「轴表里没有 movement」不代表「没有 movement 的分」。
+  // ⚠️ **判据只看坐标行，不看轴表**：轴表可能是全新的（刚被迁移建出来），
+  // 而坐标行是用户真打过的分。「轴表里没有 scale」不代表「没有 scale 的分」。
   //
-  // ⚠️ 先搬分数、再改轴的 key，顺序反过来会撞唯一索引
-  //（design_axes 有 UNIQUE(spaceId, key)）。
-  const now2 = new Date().toISOString()
-  const hasOldScores = sqlite()
-    .prepare(`SELECT count(*) AS n FROM entry_taxonomy WHERE spaceId = ? AND dimensionKey = 'movement'`)
-    .get(spaceId) as { n: number }
-  if (hasOldScores.n > 0) {
+  // ⚠️ **映射显式、不猜**：每一条退役轴都要写清它的分数去哪儿。
+  //「猜一个最接近的」会让一次语义修正变成一次静默的数据篡改。
+  //
+  // ⚠️ **`form` / `palette` / `mobility` 的分数刻意不搬** —— 那三条轴的性质
+  // 变了（form 变成 Tag 分组、palette 改成观察项、mobility 划给 Animation
+  // domain），把它们塞进某个新轴等于伪造一次用户没做过的判断。
+  // 只有 `scale → visualMass` 是真搬家：体量感仍是视觉体量的一部分，
+  // 用户的判断没有因为改名而失效。
+  //
+  // ⚠️ 退役轴的**定义**在第 3 步统一删；没搬走的分数行留在坐标表里，
+  // 等那个概念重新出现时还能找回。
+  for (const [from, to] of AXIS_MOVES) {
+    const count = sqlite()
+      .prepare('SELECT count(*) AS n FROM entry_taxonomy WHERE spaceId = ? AND dimensionKey = ?')
+      .get(spaceId, from) as { n: number }
+    if (count.n === 0) continue
     sqlite().exec('BEGIN')
     try {
+      // ⚠️ 先清目标轴上已有的分再搬 —— 目标可能已经被用户自己填过了
+      // （「先有 scale、后有 visualMass」的那种用户），直接覆盖会丢。
+      sqlite().prepare('DELETE FROM entry_taxonomy WHERE spaceId = ? AND dimensionKey = ?').run(spaceId, to)
       sqlite()
-        .prepare(`UPDATE entry_taxonomy SET dimensionKey = 'mobility' WHERE spaceId = ? AND dimensionKey = 'movement'`)
-        .run(spaceId)
-      // 轴定义：没有就补一条，有的就改标签（补与改都写成幂等的 upsert）
-      sqlite()
-        .prepare(
-          `INSERT INTO design_axes (id, spaceId, key, labelZh, labelEn, hintZh, groupKey, anchorsJson, sortOrder, createdAt, updatedAt)
-           VALUES ('axis-mobility', ?, 'mobility', '动势', 'Mobility', '静止时给人的重量感。它跳不跳、怎么飞，是行为不是形象',
-                   '动势|Motion', ?, 40, ?, ?)
-           ON CONFLICT(spaceId, key) DO UPDATE SET
-             labelZh = excluded.labelZh, labelEn = excluded.labelEn,
-             hintZh = excluded.hintZh, groupKey = excluded.groupKey,
-             anchorsJson = excluded.anchorsJson, updatedAt = excluded.updatedAt`,
-        )
-        .run(spaceId, JSON.stringify(['anchored', 'weighted', 'light', 'weightless']), now2, now2)
-      sqlite()
-        .prepare(`DELETE FROM design_axes WHERE spaceId = ? AND key = 'movement'`)
-        .run(spaceId)
+        .prepare('UPDATE entry_taxonomy SET dimensionKey = ?, updatedAt = ? WHERE spaceId = ? AND dimensionKey = ?')
+        .run(to, now, spaceId, from)
       sqlite().exec('COMMIT')
     } catch (error) {
       sqlite().exec('ROLLBACK')
       throw error
     }
-  } else if (existingKeys.has('movement')) {
-    // ⚠️ 没有分数但有轴定义 —— 只清理轴，不动坐标。
-    sqlite().prepare(`DELETE FROM design_axes WHERE spaceId = ? AND key = 'movement'`).run(spaceId)
   }
 
   // 3. 删掉已退出种子的轴定义。
@@ -497,6 +536,11 @@ const COLUMNS_TO_ADD: ReadonlyArray<{ table: string; column: string; ddl: string
     ddl: "ALTER TABLE entries ADD COLUMN worthwhileBecause TEXT NOT NULL DEFAULT ''",
   },
   { table: 'tags', column: 'groupName', ddl: "ALTER TABLE tags ADD COLUMN groupName TEXT NOT NULL DEFAULT ''" },
+  {
+    table: 'entries',
+    column: 'analysisStatus',
+    ddl: "ALTER TABLE entries ADD COLUMN analysisStatus TEXT NOT NULL DEFAULT 'committed'",
+  },
   {
     table: 'entry_taxonomy',
     column: 'setAt',

@@ -72,6 +72,18 @@ export const entries = sqliteTable('entries', {
   notes: text('notes').notNull().default(''),
 
   status: text('status').notNull().default('inbox'),
+
+  /**
+   * ⭐ 分析的确定度（2026-10-07）。
+   *
+   * `draft` = 提案（机器读的 / 我还没确认）。**它不参与筛选** —— 因为
+   * 「筛选 threatAffinity > 0.7」不该把机器的猜测和我的判断一起捞出来。
+   *
+   * ⚠️ 默认 `committed`：v0 的采集全是手工填的，没人确认等于已确认。
+   * 将来接机器填充时**必须显式传 draft**，而不是反过来把存量全变draft。
+   */
+  analysisStatus: text('analysisStatus').notNull().default('committed'),
+
   createdAt: text('createdAt').notNull(),
   updatedAt: text('updatedAt').notNull(),
 })

@@ -94,29 +94,38 @@ async function main(): Promise<void> {
   check('预置空间不可删', mine?.isBuiltin === true && source?.isBuiltin === true)
 
   const mineAxes = await listDesignAxes(mine!.id)
-  check('「我的」带维度', mineAxes.length === 4, `${mineAxes.length} 条：${mineAxes.map((a) => a.key).join(' ')}`)
+  check('「我的」带维度', mineAxes.length === 6, `${mineAxes.length} 条：${mineAxes.map((a) => a.key).join(' ')}`)
   check(
     '维度带完整档位',
     mineAxes.every((axis) => axis.anchors.length >= 3),
     mineAxes.map((a) => `${a.key}:${a.anchors.length}`).join(' '),
   )
 
-  // ⚠️ 域收窄的迁移断言（2026-10-06）
-  // combat / role 被砍（属玩法不属造型），movement 改名 mobility 且**分数要搬过来**。
+  // ⚠️ 六根视觉轴的迁移断言（2026-10-07）
+  //
+  // ⚠️ **只搬一条**：`scale → visualMass`（体量感仍是视觉体量的一部分）。
+  // form / palette / mobility 刻意**不搬** —— 那三条轴的性质变了
+  //（form 降级成 tag 分组、palette 改成观察项、mobility 划给 Animation domain），
+  // 把它们的分塞进某个新轴等于伪造一次用户没做过的判断。分数留在坐标表里，
+  // 将来那个概念回来时还能找回。
   const axisKeys = mineAxes.map((a) => a.key)
-  check('migration 后 combat 轴已不存在', !axisKeys.includes('combat'), axisKeys.join(' '))
-  check('migration 后 role 轴已不存在', !axisKeys.includes('role'))
-  check('movement 已改名 mobility', axisKeys.includes('mobility') && !axisKeys.includes('movement'))
-  check('新增 palette 轴', axisKeys.includes('palette'), axisKeys.join(' '))
+  const expected = ['visualMass', 'proportion', 'shapeLanguage', 'visualComplexity', 'familiarity', 'threatAffinity']
+  check('migration 后是六根视觉轴', axisKeys.length === 6 && expected.every((k) => axisKeys.includes(k)), axisKeys.join(' '))
+  check('combat 轴已不存在（属玩法）', !axisKeys.includes('combat'))
+  check('role 轴已不存在（属玩法）', !axisKeys.includes('role'))
+  check('form 轴已降级成 tag 分组', !axisKeys.includes('form'), axisKeys.join(' '))
+  check('palette 轴已改成观察项', !axisKeys.includes('palette'))
+  check('mobility 轴已划给 Animation domain', !axisKeys.includes('mobility'))
 
   const migratedEntry = await listEntries()
   const rec = migratedEntry.find((entry) => entry.id === 'e-old')
   check(
-    'movement 的分数搬到 mobility 上',
-    rec?.taxonomy?.['mobility'] === 0.5,
+    'scale 的分数搬到 visualMass 上',
+    rec?.taxonomy?.['visualMass'] === 0.83,
     JSON.stringify(rec?.taxonomy ?? {}),
   )
-  check('搬完后旧 key 不再出现', rec?.taxonomy?.['movement'] === undefined, String(rec?.taxonomy?.['movement']))
+  check('搬完后旧 key 不再出现', rec?.taxonomy?.['scale'] === undefined, String(rec?.taxonomy?.['scale']))
+  check('form 的分数保留但不作为轴（降级而非丢弃）', rec?.taxonomy?.['form'] === 0.33, String(rec?.taxonomy?.['form']))
   check('维度带分组标签', mineAxes.every((axis) => axis.group.labelZh !== ''), mineAxes[0]?.group.labelZh ?? '')
 
   // ⚠️ **「原作」刻意是空的** —— 它的维度取决于原作是什么游戏
@@ -126,13 +135,18 @@ async function main(): Promise<void> {
   // 3. 旧数据全部归入「我的」，一个不少
   const migrated = await listEntries()
   check('旧条目还在', migrated.some((entry) => entry.id === 'e-old'), `${migrated.length} 条`)
+
+  // ⚠️ domain 改名迁移（2026-10-07）：旧库里 entries.domain 存的是 'monster'，
+  // 迁完必须是 'creature'。而 monster 这个名字在我们自己的对话里已经被用成
+  // 「完整设计」的意思了，继续叫它会让边界迟早重新膨胀。
+  const renamed = migrated.find((entry) => entry.id === 'e-old')
+  check('domain 已从 monster 迁到 creature', renamed?.domain === 'creature', String(renamed?.domain))
   const old = migrated.find((entry) => entry.id === 'e-old')
-  // ⚠️ 断言里用的是 mobility 而不是 movement —— 域收窄时那条轴改了名，
-  // 而分数要跟着搬过去（syncDesignAxes 里做）。所以「迁进来」已经包含了
-  // 「改名」这一层。
+  // ⚠️ 断言里用的是 visualMass 而不是 scale —— 语义修正时那条轴改了名，
+  // 而分数要跟着搬过去（syncDesignAxes 里的 AXIS_MOVES 做）。
   check(
-    '旧坐标迁到「我的」空间（movement 已改名为 mobility）',
-    old?.taxonomy?.['scale'] === 0.83 && old?.taxonomy?.['mobility'] === 0.5,
+    '旧坐标迁到「我的」空间（scale 已搬到 visualMass）',
+    old?.taxonomy?.['visualMass'] === 0.83,
     JSON.stringify(old?.taxonomy ?? {}),
   )
   check('「我的」空间读数与迁移前一致', Object.keys(old?.taxonomy ?? {}).length === 3, `${Object.keys(old?.taxonomy ?? {}).length} 条`)
@@ -147,9 +161,9 @@ async function main(): Promise<void> {
   const spaces2 = await listDesignSpaces()
   check('空间没被重复插入', spaces2.length === spaces.length, `${spaces2.length} vs ${spaces.length}`)
   const axes2 = await listDesignAxes(mine!.id)
-  check('维度没被重复插入', axes2.length === 4, `${axes2.length} 条`)
+  check('维度没被重复插入', axes2.length === 6, `${axes2.length} 条`)
   const migrated2 = await listEntries()
-  check('坐标没被重复搬运', migrated2.find((e) => e.id === 'e-old')?.taxonomy?.['scale'] === 0.83)
+  check('坐标没被重复搬运', migrated2.find((e) => e.id === 'e-old')?.taxonomy?.['visualMass'] === 0.83)
 
   await closeDatabase()
   fs.rmSync(legacyPath, { force: true })

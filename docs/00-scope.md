@@ -1,9 +1,98 @@
-# 00 · 范围（v0 冻结 → v0.2 通用化 → 域收窄）
+# 00 · 范围（v0 冻结 → v0.2 通用化 → 域收窄 → 架构原则）
 
 **写作日期** 2026-10-06 ｜ **状态** v0 冻结稿
 **改写日期** 2026-10-06 ｜ **状态** v0.2 通用化（§一 / §二 / §四 已改写，见下方改写记录）
 **同日第三次修订** ｜ **monster 域收窄为「形象设计」**（§四），并引入**多个设计
 空间**（原作 / 我的 / 项目）—— 见 §四。
+**2026-10-07 第四次修订** ｜ **§负一：架构原则冻结**（比任何具体 schema 都早），
+domain 改名 `Creature Design`，维度换成**六根视觉轴** —— 见 §负一 / §四。
+
+---
+
+## §负一 架构原则（2026-10-07 冻结，比任何 schema 都早）
+
+> **每个 Domain 只研究一种创作问题；多个 Domain 加起来，才是一个完整设计。**
+
+**这一条比所有 schema 都早冻结**，因为 schema 是它的推论：
+
+```
+Data Model / UI Schema
+          ↓ 推导自
+Domain Principle 一个 domain 只回答一个问题
+```
+
+### 三条衍生原则
+
+| 原则 | 内容 | 判据 |
+|---|---|---|
+| **Domain** | 一个 domain 只研究一种创作问题 | 加新 domain = 出现了一个**现有问题答不了的新问题**（不是「又有一类素材了」） |
+| **Reference** | 同一个 Reference 可以被多个 domain 从不同角度解读 | Reference 是**素材**，domain 是**镜头** —— 同一段素材在不同镜头下是不同的东西 |
+| **Composition** | 完整作品不是某个 domain 的输出，而是多个 domain 在项目阶段的组合 | Monster Design ≠ Creature Design |
+
+### 它立刻改变的三件事
+
+**① 昨天砍 combat / role 用的是它。** 「它在关卡里怎么用」不是「它长什么样」
+—— 那是另一个创作问题。
+
+**② 名字会成为边界的先声。** 所以 domain 从 `monster` 改名 **`creature`**：
+「monster」在我们自己的对话里已经被用成「完整设计」的意思了（combat / encounter
+都属于 monster design），继续叫它会让边界迟早重新膨胀。选 `creature` 是因为它
+**不限定游戏**——未来的《世界巡游》里未必都是「怪物」，也可能是灵体或抽象生命。
+
+⚠️ **改名的是「我们怎么称呼它」，不是「历史数据变成非法」。** 迁移里保留
+`monster → creature` 的别名映射，旧库与旧导出包继续可用。
+
+**③ 每个 domain 有一句 `creativeQuestion`，且它负责划边界。**
+
+```
+Creature Design
+  question  它长成什么样，为什么有辨识度？
+  focus     轮廓 · 比例 · 配色 · 视觉复杂度 · 辨识度 · 气质
+  不研究    AI · 攻击模式 · 关卡作用 · 战斗定位 · 数值 · Group Synergy · Counterplay · DPS
+```
+
+⚠️ **名字负责好懂，问题句负责准确。** 「Creature Design」好懂但不划边界；
+「它长成什么样」才划得清。所以选库页上**问题句显示在名字前面**且视觉更重。
+
+⚠️ **过期的 hint 比没有 hint 更坏**：它会让界面承诺一件我们刚刚决定不做的事。
+（真发生过一次——hint 写着「战斗定位、行为模式」，而那两项当天就被砍了。）
+
+### ⚠️ Reference 原则的连带后果：Entity 不该属于唯一 domain
+
+按 Reference 原则，同一段素材**应该**能被 Creature Design / Animation / VFX
+分别解读。所以理想形态是：
+
+```
+             Entity                        ← 素材，只引用一次
+                │
+         Domain Analysis                   ← 「谁在什么镜头下看到了什么」
+        ┌───────┼────────┐
+        ▼       ▼        ▼
+   Creature  Animation  VFX
+     │          │         │
+   Tags      Tags      Tags
+   Scales    Scales    Scales
+```
+
+**⚠️ 但现在不做。** 现在只有 1 条数据、1 个 domain，改成多对多是纯预付成本。
+
+**触发条件（判据已定，不到时候不用重新想）**：**第二个 domain 真出现**。那时
+第一个要改的地方是 `entries.domain` 这列 —— 它现在是单值，而它该是「这段素材
+被哪个 domain 首次解读」的标记，不是「这段素材只属于谁」的所有权声明。
+
+### 三条不放进 Atlas 的东西（记住了但不建表）
+
+token 明确点名过这三样，值得留在文档里以免将来「想起来要做」：
+
+| 不做 | 理由 |
+|---|---|
+| `Primitive` 表 | Primitive 就是 tag 分组（`motif` / `form` / `feature` / `device`），它自然长出来 |
+| `Principle` 表 | 原理还在**观察与判断的文本**里。等真的有几十条、且发现「同一句话在不同条里反复出现」时再抽 |
+| 事实层（原作数据考据） | **抄原作的数字不是创作。** 原作的 HP / 碰撞宽度 / 帧数属于外部作品的事实，不属于我的设计空间 —— 一进来就是在做 wiki |
+
+⚠️ 第三条最容易被「补全资料」的心态违反：补全资料与建立自己的判断空间是
+**相反的两件事**。看到「HP 240、碰撞宽度 37px」这类信息时，正确的反应通常是
+**不存**。
 
 ---
 
@@ -292,40 +381,68 @@ token 明确裁定：**「主要还是关于怪物形象设计，不要全栈多
 
 ---
 
-### 维度列表（monster）· 域收窄后
+### 维度列表（creature）· **六根视觉轴**（2026-10-07）
 
 ⚠️ **两级结构：`domain → group → dimension`**。group 只管展示，不落库、
 不进 `entry_taxonomy` —— 那是 key 的扁平结构该背的债。
 
 ```
-形态 Form          它是什么东西、多大、长什么样
-  ├ form      形态型  blob · humanoid · beast · insect · construct
-  ├ scale     体量    tiny · small · medium · large · huge
-  └ palette   配色    monochrome · limited · duotone · rich · loud
+形态 Form          它长什么样 —— 客观可见的形状
+  ├ visualMass        视觉体量  weightless · slight · solid · heavy · massive
+  ├ proportion        比例      head-heavy · chibi · natural · heroic · elongated
+  ├ shapeLanguage     形体语言  round · organic · boxy · angular · spiky
+  └ visualComplexity  视觉复杂度 silhouette-first · readable · detailed · ornate · busy
 
-动势 Motion        静止时给人的重量与姿态感
-  └ mobility  动势    anchored · weighted · light · weightless
+可读性 Readability  它让人读出什么
+  ├ familiarity     熟悉度    abstract · archetypal · recognizable · referential · realistic
+  └ threatAffinity  气质      menacing · wild · neutral · appealing · gentle
 ```
 
-⚠️ **`movement` 改名 `mobility` 并收窄档位**。原来是
-`static / ground / jumping / flying / teleport`，后三个已经是**行为**而不是形象。
-现在只留「静止时给人什么重量感」—— 这条轴量的是**视觉观感**，不是运动学。
-**已有的分数随改名一起搬过去**（`syncDesignAxes` 里有专门逻辑，见 db/database.ts）。
+#### ⭐ 入选判据：**能不能在 concept art 上指着一个地方打分**
 
-⚠️ **`palette` 配色是唯一现在就加的新轴**：纯视觉、无歧义、几乎每条都能填。
+指得出来才配当坐标轴。指不出来的（animation / vfx / lighting）就该划给别的
+domain —— 这正是 §负一 那条原则在一个 domain 内部的同样应用。
 
-⚠️ **其余候选（silhouette 复杂度 / 形体语言 / 装饰密度）刻意不加** ——
-凭理论造的轴 90% 会是死轴。用同一条判据：**只加入你真的会拿来比较两个怪物的
-轴**。收完现有的 5 轴（变 4 个），采到 20 条再看缺什么。
+#### ⚠️ 上一版的四根轴里，**三根是分类不是刻度**
+
+这是本轮真正的错误，比「轴选错了」更根本：
+
+| 上一版 | 它其实是 | 现在 |
+|---|---|---|
+| `form` 形态型（blob/humanoid/beast） | **归类**（「它属于哪一类」），不是刻度上的位置 | 降级成 tag 分组 `form`（Body Form） |
+| `palette` 配色（monochrome/limited/duotone） | **特征描述** | 改成 `observed` 里的观察项 |
+| `mobility` 动势 | **动作语言**，属Animation domain | 划给 Animation domain |
+
+⚠️ 2026-10-06 域收窄时我只问了「这条轴属不属于形象设计」，没问「**它是一条刻度
+吗**」。前者过了，后者没过 —— 而后者才是轴与分类的分界。
+
+⚠️ **轴与分类的分界在数据上是硬的**：轴存0–1 连续分（可以取任意中间值），
+分类是「是/不是」。「它有点像 blob」没法表达成「0.62」—— 一旦能表达，
+那条轴就变成「分类有多像 blob」，那是一条完全不同的轴。
+
+⚠️ **`Threat ↔ Affinity` 是「气质」不是「强度」**：蘑菇可以是 menacing ——
+它看起来危险与它实际上有多强无关。所以它和 combat domain 里的「威胁」重名，
+但不是同一件事。这也是为什么把它放在 creature domain 不会造成边界泄漏：
+**它量的是观感，不是玩法。**
+
+⚠️ **退役轴的分数处理各不相同，且必须显式**（`AXIS_MOVES`）：
+
+| 退役轴 | 分数怎么办 | 为什么 |
+|---|---|---|
+| `scale` → `visualMass` | **搬** | 体量感仍是视觉体量的一部分，用户的判断没有因为改名而失效 |
+| `form` / `palette` / `mobility` | **不搬，留着** | 性质变了 —— 塞进某个新轴等于伪造一次用户没做过的判断 |
+
+⚠️ **不搬不等于丢弃**：分数行留在 `entry_taxonomy` 里，等那个概念重新出现
+（回到「我的空间」或某个项目空间）时还能找回。
 
 ⚠️ **anchors 是完整档位，不是示例词。** 给 3 个示例，用户只敢在那 3 个词里选——
 每条轴要能看到自己的全部档位才好打分。
 
 ⚠️ **渲染是按 group 遍历维度的**，所以每个维度都必须声明 group，漏声明就是
-静默丢失。`npm run verify` 里有这条断言，以及「combat / role 不该回来」的
-回归守卫——它们回来必须是**有意识的决定**，而不是某次重构顺手带回来的。
+静默丢失。`npm run verify` 里有这条断言，以及六条「**退役轴不该回来**」的
+回归守卫 —— 它们回来必须是有意识的决定，而不是某次重构顺手带回来的。
 
-⭐ **档位 → score 的映射是 `(index+1)/(n+1)`**（`anchorToScore`）：点「huge」
+⭐ **档位 → score 的映射是 `(index+1)/(n+1)`**（`anchorToScore`）：点「massive」
 落在该轴的第五档，永不触底也永不顶格。那个 `+1` 不能省 —— 省了的话最高档
 就是 1.0，0.8 以上的精度界面上再也走不到。
 
@@ -378,32 +495,53 @@ External Work → Observation → My Read → Design Space → Compare → Creat
 ⚠️ 旧 `notes` 列**保留不删**，但v3 起读写一律走 `observed`。迁移时**保守地全搬
 进 observed** —— 不猜用户哪些是判断，猜错比不猜贵。
 
-### ⭐ tag 的命名空间（2026-10-06）
+### ⭐⭐ tag 的四种参照系（2026-10-07 token 裁定）
 
-`tags.groupName` ∈ `primitive | visual | concept | role | context | taxonomy`，
-空串 = 未归类。
+`tags.groupName` ∈ `motif | form | feature | device | taxonomy`，空串 = 未归类。
 
-⚠️ **为什么现在就需要**：半年后 800 个 tag 混在一起，就只能一个个划来做分面
-筛选，而那时再补命名空间要手工回填几百行 —— **且回填时已经不记得当初为什么
-给某个 tag 选了哪个组**。趁现在只有几十个 tag、还都记得住的时候定下来，成本是零。
+**判据：这条 tag 在回答哪个问题？** 四个问题互不重叠，所以四组也互不重叠——
+而**互不重叠正是 Faceted Search 能用的前提**：组内多选是 OR、跨组是AND，
+那个组合只有在组之间真的正交时才有意义。
 
-⚠️ **显示名不带前缀。** 内部存 `jumper` + `group=primitive`，界面显示「Jumper」。
-前缀只是内部知识，漏给用户看只会变成噪音。
+| 组 | 它问 | 例 |
+|---|---|---|
+| `motif` 原型来源 | **它像什么** | `animal:cat` `plant:mushroom` `object:clock` `element:fire` |
+| `form` 形体 | **它是什么身体** | `blob` `biped` `quadruped` `serpentine` `spherical` |
+| `feature` 特征 | **它身上有什么** | `horn` `wing` `tail` `shell` `oversized-head` `single-eye` |
+| `device` 视觉手法 | **造型怎么做的** | `face-on-body` `asymmetry` `repetition` `layered-shell` `oversized-feature` |
 
-⚠️ **归类不强制**，空串是一等状态。随手记的频次远高于归类的需要，让随手记
-变成一道手续是本末倒置。侧栏把「未归类」排最后但**不折叠** —— 藏起来等于
-惩罚随手记。
+⚠️ **`device` 那一组最可能是真正的设计词汇表** —— 它记的不是「它有什么」，
+而是「**造型上做了什么手法**」。而手法是可以迁移的：知道「用不对称制造
+不安感」之后，那条手法能用在任何题材上。这正是 Creative Atlas 的产出物。
+
+⚠️ **Primitive 全部交给 tag，坐标轴一条不留**。原来的 `form`轴（blob /
+humanoid / beast）就是典型：它是「它属于哪一类」，是**归类**，不是刻度上的
+位置。**轴与分类的分界就在这里**（见上面六根轴那节）。
+
+⚠️ **显示名不带前缀**：内部存 `animal:cat` + `group=motif`，界面显示
+`animal:cat`。⚠️ 但**多段的名字（`animal:cat`）本身是有信息量的** —— 它在说
+「这个参照物来自哪一类」，而那正是 motif 组内部的二级结构。所以
+「不带 group 前缀」与「名字里可以有语义前缀」不矛盾。
+
+⚠️ **为什么现在就需要 group**：半年后 800 个 tag 混在一起，就只能一个个划来做
+分面筛选，而那时再补要手工回填几百行—— **且回填时已经不记得当初为什么给
+某个 tag 选了哪个组**。趁现在只有几十个 tag、还都记得住的时候定下来，成本是零。
+
+⚠️ **归类不强制**，空串是一等状态。随手记的频次远高于归类的需要。侧栏把
+「未归类」排最后但**不折叠** —— 藏起来等于惩罚随手记。
 
 ⚠️ **group 挂在 tag 实体上，不挂 `entry_tags`** —— 与 origin 正好相反：归类是
 「这个词属于哪类」，是词的性质，与挂在哪些条目上无关；而 origin 记的是「这条
 关联是谁加的」，同一个词在不同条目上可以有不同 origin。
 
-**Primitive Dictionary 不需要单独的表**：primitive 就是 `group=primitive` 的 tag，
-它自然长出来。
+⚠️ **tag 不带 domain 归属**（2026-10-07 明确否决过一个方案）：`blob` 在
+Creature Design 与 Character Design 里指的是同一个词。**domain 归属应该落在
+「分析」上，不落在「词」上** —— 这个词不属于任何 domain，是 Creature 的某次
+分析里用了它。给词加 domain 会让同一个词在第二个 domain 出现时被迫复制一份。
 
 ### `#cheap-to-animate` 这类生产性标签最有价值
 
-Atlas 的终局不是百科全书，是**为生产原创素材提供参考**。「这只便宜好做」比「这是一只飞行虫类」更能指导下一步 —— 这类判断写在 **tag** 里（`cheap-to-animate`，`group=primitive`），不是 **taxonomy** 里（taxonomy 是可比较的刻度）。两者互补，不是同一件事。
+Atlas 的终局不是百科全书，是**为生产原创素材提供参考**。「这只便宜好做」比「这是一只飞行虫类」更能指导下一步 —— 这类判断写在**tag** 里（`cheap-to-animate`，`group=device`），不是 **taxonomy** 里（taxonomy 是可比较的刻度）。两者互补，不是同一件事。
 
 ### ⭐⭐⭐ 多个设计空间（2026-10-06）
 

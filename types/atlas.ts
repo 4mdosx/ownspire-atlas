@@ -21,24 +21,64 @@ export type ImageSource = 'paste' | 'file'
  * 是有数据支撑的。
  * ────────────────────────────────────────────────────────────── */
 
-export type DomainCode = 'monster'
+/* ──────────────────────────────────────────────────────────────
+ * ⭐⭐⭐ Domain = 一个创作问题，不是一类资产（2026-10-07 token 裁定）
+ *
+ * > **每个 Domain 只研究一种创作问题，多个 Domain 加起来才是一个完整设计。**
+ *
+ * ⚠️ 这条把 domain 从「分类」重新定义成「**问题**」，判据随之全变：
+ *
+ * · **能不能加一个新 domain** = 是不是出现了一个**现有问题答不了的新问题**
+ *   （不是「又有一类素材了」）
+ * · **某个字段该放哪** = 它服务于哪个问题。**答案不唯一时说明是两个问题**
+ * · **一个 domain 里出现「顺便也记一下…」** = 那个「顺便」属于另一个问题
+ *
+ * ⚠️ 昨天砍掉 monster 的 `combat` / `role` 两条轴，用的就是这条判据：
+ * 「它在关卡里怎么用」不是「它长什么样」，那是**另一个创作问题**。
+ * 而它们**没有被搬家** —— 因为那个问题现在没人问（见 §一 的问题地图）。
+ *
+ * ⚠️ **同一个 Reference 可以被多个 domain 分别解读**，而那不叫重复：
+ * 蘑菇既是 Creature Design 的研究对象（怎么做到极简又可辨识），
+ * 也是 Encounter Design 的研究对象（多快出、多密、给多少反馈）。
+ * **Reference 是素材，domain 是镜头 —— 同一段素材在不同镜头下是不同的东西。**
+ *
+ * ⚠️ 所以「数据模型要不要让 entry 属于多个 domain」是个**独立问题**，
+ * 不由这条原则直接推出。答案见 §一：现在只有 1 条数据 + 1 个 domain，
+ * 改成多对多是纯预付成本。**判据已写下，触发条件是第二个 domain 真出现。**
+ * ────────────────────────────────────────────────────────────── */
+
+export type DomainCode = 'creature'
 
 export type DomainDef = {
-  code: DomainCode
+code: DomainCode
+  /** 好懂的名字 —— 负责让人一眼知道「这是什么素材」。 */
   labelZh: string
   labelEn: string
-  /** 界面上选库时的一句话说明。 */
+  /**
+   * ⭐ 这个 domain **回答什么问题** —— 负责划边界。
+   *
+   * ⚠️ 与 labelZh 的分工是刻意的：名字负责好懂，问题句负责准确。
+   * 「Creature Design」好懂但不划边界（什么 creature？）；
+   * 「它长成什么样、为什么有辨识度」才划得清边界。
+   */
+  creativeQuestion: string
+  /** 一句话补充（选库页副标）。⚠️ 必须与实际轴一致 —— 写过期的文案
+   *  会让界面承诺我们刚决定不做的事（昨天就发生过一次）。 */
   hintZh: string
   icon: string
 }
 
 export const DOMAINS: readonly DomainDef[] = [
   {
-    code: 'monster',
-    labelZh: '怪物',
-    labelEn: 'Monster',
-    hintZh: '生物形态、战斗定位、行为模式',
-    icon: 'monster',
+    code: 'creature',
+    labelZh: '生物设计',
+    labelEn: 'Creature Design',
+    creativeQuestion: '它长成什么样，为什么有辨识度？',
+    // ⚠️ 这行字曾经写「生物形态、战斗定位、行为模式」—— 而 combat / role
+    // 在 2026-10-06 就被砍掉了。**过期的 hint 比没有 hint 更坏**：它会让
+    // 界面承诺一件我们刚刚决定不做的事，而选库页是这件事的第一印象。
+    hintZh: '轮廓 · 比例 · 配色 · 视觉复杂度 · 辨识度 · 气质',
+    icon: 'creature',
   },
 ] as const
 
@@ -48,6 +88,20 @@ export function isDomainCode(value: string): value is DomainCode {
 
 export function domainOf(code: string): DomainDef | null {
   return DOMAINS.find((domain) => domain.code === code) ?? null
+}
+
+/**
+ * ⚠️ 旧 code → 新 code（2026-10-07`monster` 改名 `creature`）。
+ *
+ * ⚠️ **保留映射是为了让历史数据与旧导出包继续可用**，而不是舍不得改。
+ * 读的时候两个 code 都认；写的时候一律写新的那个。
+ * 真的删掉这条别名应该是「数据里再也没有旧值、导出包也全升级完」之后的事。
+ */
+export const DOMAIN_ALIASES: Readonly<Record<string, DomainCode>> = { monster: 'creature' }
+
+/** 归一化 code：认旧名，返回新名。不认识就原样返回（调用方决定怎么报错）。 */
+export function normalizeDomainCode(value: string): string {
+  return DOMAIN_ALIASES[value] ?? value
 }
 
 /* ──────────────────────────────────────────────────────────────
@@ -130,6 +184,49 @@ export type DesignAxis = {
   updatedAt: string
 }
 
+/* ──────────────────────────────────────────────────────────────
+ * ⭐ 分析状态：proposal 与 committed 是不同的东西（2026-10-07）
+ *
+ * ⚠️ **这不是「审核流程」，是「别把不同确定度的东西混着用」。**
+ *
+ * 一条坐标有两种可能的来源：
+ * · **我看了图之后自己打的分** → committed，这是我确认过的判断
+ * · **机器读出来的**（将来接 LLM 或视觉模型） → draft，那是一个**提案**
+ *
+ * ⚠️ **混在一起会有两个具体的坏处**：
+ * 1. **可信度不可见**：空间分布图上「这条在 0.62」和「这条在 0.62」看起来一样，
+ *    但一个是猜的一个是我判的。半年后回看分不清。
+ * 2. **筛选被污染**：「筛选所有 threatAffinity > 0.7 的」会把机器的猜测
+ *    和我的判断一起捞出来 —— 而这两者不该有同等权重。
+ *
+ * ⚠️ 所以规则很硬：**`draft` 的坐标不参与筛选**，也不在分布图上占位
+ * （虚线渲染）。要变 committed 就得有人确认过 —— 这是「机器填充」与
+ * **「人的判断」之间那道必须存在的缝。
+ *
+ * ⚠️ **默认 committed**：v0 的采集全是手工填的，没人确认等于已确认。
+ * 将来接机器时**必须显式传 draft**，而不是反过来让所有存量数据变成 draft。
+ * ────────────────────────────────────────────────────────────── */
+
+export type AnalysisStatus = 'draft' | 'review' | 'committed'
+
+export const ANALYSIS_STATUSES: readonly AnalysisStatus[] = ['draft', 'review', 'committed'] as const
+
+export const ANALYSIS_STATUS_LABEL: Record<AnalysisStatus, string> = {
+  draft: '提案',
+  review: '待定稿',
+  committed: '已定稿',
+}
+
+export const ANALYSIS_STATUS_HINT: Record<AnalysisStatus, string> = {
+  draft: '机器读的，还没我确认 —— 不参与筛选',
+  review: '我看过，暂未定稿',
+  committed: '我确认过的判断',
+}
+
+export function isAnalysisStatus(value: string): value is AnalysisStatus {
+  return (ANALYSIS_STATUSES as readonly string[]).includes(value)
+}
+
 /** 系统预置的两个空间的 code。 */
 export const SPACE_SOURCE = 'source'
 export const SPACE_MINE = 'mine'
@@ -147,7 +244,7 @@ export const SPACE_MINE = 'mine'
 export type TaxonomyDimensionKey = string
 
 /** 维度的归类 group —— 纯展示用，不进数据库。 */
-export type TaxonomyGroupKey = 'form' | 'motion'
+export type TaxonomyGroupKey = 'form' | 'read'
 
 export type TaxonomyDimensionDef = {
   key: TaxonomyDimensionKey
@@ -174,10 +271,17 @@ export type TaxonomyGroupDef = {
   hintZh: string
 }
 
-/** monster domain 的 group —— 展示层的归类。 */
+/**
+ * ⭐ group 分成两堆（2026-10-07）：**形态**（它长什么样）与 **可读性**
+ * （它让人读出什么）。分开是因为它们回答的是两个不同的问题 ——
+ * 而「一个 domain 只研究一种创作问题」那条原则，在 domain 内部同样适用。
+ *
+ * · 形态：体量 / 比例 / 形体语言 / 视觉复杂度 —— 都是「客观可见的形状」
+ * · 可读性：熟悉度 / 气质 —— 都是「它让人读出什么」，与形状有关但不是形状
+ */
 export const MONSTER_TAXONOMY_GROUPS: readonly TaxonomyGroupDef[] = [
-  { key: 'form', labelZh: '形态', labelEn: 'Form', hintZh: '它是什么东西、多大、长什么样' },
-  { key: 'motion', labelZh: '动势', labelEn: 'Motion', hintZh: '静止时给人的重量与姿态感' },
+  { key: 'form', labelZh: '形态', labelEn: 'Form', hintZh: '它长什么样 —— 客观可见的形状' },
+  { key: 'read', labelZh: '可读性', labelEn: 'Readability', hintZh: '它让人读出什么 —— 辨识度与第一眼气质' },
 ] as const
 
 /**
@@ -188,74 +292,85 @@ export const MONSTER_TAXONOMY_GROUPS: readonly TaxonomyGroupDef[] = [
  * 否则换 domain 就要改组件，那等于把 domain 的知识漏进界面代码里。
  */
 export const TAXONOMY_GROUPS_BY_DOMAIN: Record<DomainCode, readonly TaxonomyGroupDef[]> = {
-  monster: MONSTER_TAXONOMY_GROUPS,
+  creature: MONSTER_TAXONOMY_GROUPS,
 }
 
 /**
- * ⭐⭐ monster domain 的维度 —— **只管形象设计**（2026-10-06 域收窄）。
+ * ⭐⭐ creature domain 的维度 —— **六根视觉轴**（2026-10-07）。
  *
- * token 明确裁定：「主要还是关于怪物形象设计，不要全栈多维度（既关心动作表现
- * 又关心关卡作用）」。于是砍掉两条轴：
+ * 这六根不是「我拍脑袋想的」，而是**只看一眼 concept art 就能打出分**的那种。
+ * 判据：**你能在设定图上指着一个地方说「这里更圆一点」** —— 指得出来才配当
+ * 坐标轴；指不出来的（animation、vfx、lighting）就该划给别的 domain。
  *
- * · ~~`combat` 战斗方式~~（melee/ranged/charger/zoner/summoner）
- * · ~~`role` 定位~~（fodder/pressure/elite/boss）
+ * ⚠️ **上一版的四根轴里有三根是分类，不是刻度**（这才是真正的错误）：
+ * · ~~`form` 形态型~~（blob/humanoid/beast）→ 它是**归类**（「它属于哪一
+ *   类」），不是刻度上的位置。已降级为 tag 分组 `form`（Body Form）。
+ * · ~~`palette` 配色~~（monochrome/limited/duotone）→ 它是**特征描述**。
+ *   颜色结构改为 `observed` 里的观察项。
+ * · ~~`mobility` 动势~~→ 明确划给 **Animation domain**：造型阶段回答
+ *   「它静止时什么质感」，动作阶段回答「它动起来什么质感」，两个问题。
  *
- * ⚠️ **它们不是被搬家，是被删掉。** 一个关卡里放 5 个 fodder 还是 2 个 elite，
- * 那是**关卡设计的决定**，不是这只怪的造型属性 —— 同一只怪在不同关卡里可以是
- * fodder 也可以是 elite，那说明「role」根本不是它的属性，而是**用法**。
+ * ⚠️ 2026-10-06 域收窄时我只问了「这条轴属不属于形象设计」，没问
+ * 「**它是一条刻度吗**」。前者过了，后者没过 —— 而后者才是轴与分类的分界。
  *
- * ⚠️ **不新建「玩法空间」**：空建一个空间就是为「不存在的第二个用途」预付成本
- * —— 那正是本文件里明确否掉的取舍（见 §一「domain 列表不进数据库」的同款
- * 理由）。等真的开始采集玩法素材时再建，那时它的轴才有数据支撑。
- *
- * ⚠️ `movement` 改名 `mobility` 并收窄档位：原来是
- * `static/ground/jumping/flying/teleport`，后三个已经是**行为**而不是形象。
- * 现在只留「静止时给人什么重量感」—— 这条轴量的是**视觉观感**，不是运动学。
- * 具体的移动方式（跳跃、瞬移）属于它的**行为**，进 notes 的自由文本就够，
- * 不该占用一条坐标轴。
- *
- * ⚠️ **`palette` 配色是唯一现在就加的新轴**：纯视觉、无歧义、几乎每条都能填。
- * 其余候选（silhouette 复杂度 / 形体语言 / 装饰密度）**刻意不加** ——
- * 凭理论造的轴 90% 会是死轴。等采到 20 条、看缺什么再说。
+ * ⚠️ **Threat ↔ Affinity 是「气质」不是「强度」**：蘑菇可以是 menacing ——
+ * 它看起来危险与它实际上有多强无关。所以它和 combat domain 里的「威胁」
+ * 重名，但不是同一件事。
  */
 export const MONSTER_TAXONOMY: readonly TaxonomyDimensionDef[] = [
   {
-    key: 'form',
-    labelZh: '形态型',
-    labelEn: 'Form',
+    key: 'visualMass',
+    labelZh: '视觉体量',
+    labelEn: 'Visual Mass',
     group: 'form',
-    anchors: ['blob', 'humanoid', 'beast', 'insect', 'construct'],
-    hintZh: '轮廓上属于哪一类',
+    anchors: ['weightless', 'slight', 'solid', 'heavy', 'massive'],
+    hintZh: '画面上占多满 —— 注意是**视觉**重量，不是实际体积',
   },
   {
-    key: 'scale',
-    labelZh: '体量',
-    labelEn: 'Scale',
+    key: 'proportion',
+    labelZh: '比例',
+    labelEn: 'Proportion',
     group: 'form',
-    anchors: ['tiny', 'small', 'medium', 'large', 'huge'],
-    hintZh: '相对同场景参照物的大小',
+    anchors: ['head-heavy', 'chibi', 'natural', 'heroic', 'elongated'],
+    hintZh: '头身比与各部位大小关系 —— 剪影能不能一眼读懂全靠它',
   },
   {
-    key: 'palette',
-    labelZh: '配色',
-    labelEn: 'Palette',
+    key: 'shapeLanguage',
+    labelZh: '形体语言',
+    labelEn: 'Shape Language',
     group: 'form',
-    anchors: ['monochrome', 'limited', 'duotone', 'rich', 'loud'],
-    hintZh: '用色数量与对比强度 —— 造型的一部分，不是渲染细节',
+    anchors: ['round', 'organic', 'boxy', 'angular', 'spiky'],
+    hintZh: '基本形状倾向。圆 = 可亲，硬边 = 机械/冷，尖角 = 攻击性',
   },
   {
-    key: 'mobility',
-    labelZh: '动势',
-    labelEn: 'Mobility',
-    group: 'motion',
-    anchors: ['anchored', 'weighted', 'light', 'weightless'],
-    hintZh: '静止时给人的重量感。它跳不跳、怎么飞，是行为不是形象',
+    key: 'visualComplexity',
+    labelZh: '视觉复杂度',
+    labelEn: 'Visual Complexity',
+    group: 'form',
+    anchors: ['silhouette-first', 'readable', 'detailed', 'ornate', 'busy'],
+    hintZh: '缩小到多小还认得出 —— 直接决定生产成本',
+  },
+  {
+    key: 'familiarity',
+    labelZh: '熟悉度',
+    labelEn: 'Familiarity',
+    group: 'read',
+    anchors: ['abstract', 'archetypal', 'recognizable', 'referential', 'realistic'],
+    hintZh: '离日常经验多近 —— 决定观众能否立刻读懂它的意图',
+  },
+  {
+    key: 'threatAffinity',
+    labelZh: '气质',
+    labelEn: 'Threat ↔ Affinity',
+    group: 'read',
+    anchors: ['menacing', 'wild', 'neutral', 'appealing', 'gentle'],
+    hintZh: '第一眼给的情感态度 —— 与「它有多强」无关，蘑菇可以是 menacing',
   },
 ] as const
 
 /** domain → 维度定义。换 domain 就换一组维度。 */
 export const TAXONOMY_BY_DOMAIN: Record<DomainCode, readonly TaxonomyDimensionDef[]> = {
-  monster: MONSTER_TAXONOMY,
+  creature: MONSTER_TAXONOMY,
 }
 
 export function dimensionsOf(domain: DomainCode): readonly TaxonomyDimensionDef[] {
@@ -459,33 +574,48 @@ export type Tag = {
   updatedAt: string
 }
 
-export type TagGroupKey = 'primitive' | 'visual' | 'concept' | 'role' | 'context' | 'taxonomy'
+/**
+ * ⭐⭐ tag 的四种参照系（2026-10-07 token 裁定）。
+ *
+ * **判据：这条 tag 在回答哪个问题？** 四个问题互不重叠，所以四组也互不重叠 ——
+ * 而「互不重叠」正是 Faceted Search 能用的前提（同组内多选是 OR，跨组是 AND，
+ * 那个组合只有在组之间真的正交时才有意义）。
+ *
+ * ⚠️ **Primitive 全部交给 tag，坐标轴一条不留**（同日改动）。原来的
+ * `form`（blob/humanoid/beast）就是典型：它是「它属于哪一类」，是**归类**，
+ * 不是刻度上的位置。**轴与分类的分界就在这里**。
+ *
+ * ⚠️ 组名从英文直译过来（motif / form / feature / device），因为它们其实是
+ * **四种不同的参照系**，各说各的：
+ * · motif 问「像什么」—— 借用现实世界的原型
+ * · form 问「是什么」—— 身体结构本身
+ * · feature 问「有什么」—— 具体零件
+ * · device 问「怎么做的」—— 造型手法与视觉惯例
+ */
+export type TagGroupKey = 'motif' | 'form' | 'feature' | 'device' | 'taxonomy'
 
 export const TAG_GROUP_KEYS: readonly TagGroupKey[] = [
-  'primitive',
-  'visual',
-  'concept',
-  'role',
-  'context',
+  'motif',
+  'form',
+  'feature',
+  'device',
   'taxonomy',
 ] as const
 
 export const TAG_GROUP_LABEL: Record<TagGroupKey, string> = {
-  primitive: '行为原型',
-  visual: '视觉形态',
-  concept: '概念',
-  role: '定位',
-  context: '场景',
-  taxonomy: '分类',
+  motif: '原型来源',
+  form: '形体',
+  feature: '特征',
+  device: '视觉手法',
+  taxonomy: '未归类',
 }
 
 export const TAG_GROUP_HINT: Record<TagGroupKey, string> = {
-  primitive: '它用了什么设计套路 —— jumper / charger / swarm',
-  visual: '它长什么样 —— blob / plant / machine',
-  concept: '它表达什么概念 —— growth / split / mimic',
-  role: '在场上干什么 —— tank / support / controller',
-  context: '出现在什么场合 —— early-game / boss',
-  taxonomy: '暂时没归类的',
+  motif: '它像什么 —— animal:cat / plant:mushroom / object:clock',
+  form: '它是什么身体 —— blob / biped / quadruped / serpentine / floating',
+  feature: '它身上有什么 —— horn / wing / tail / shell / oversized-head',
+  device: '造型怎么做的 —— face-on-body / asymmetry / layered-shell',
+  taxonomy: '还没归类的 —— 点一下能改',
 }
 
 export type TagGroup = TagGroupKey | ''
@@ -554,6 +684,16 @@ export type Entry = {
   worthwhileBecause: string
 
   status: EntryStatus
+
+  /**
+   * ⭐ 分析的确定度（2026-10-07）。
+   *
+   * 默认 `committed` —— v0 的采集全是手工填的，没人确认等于已确认。
+   * 将来接机器填值时**必须显式传 draft**：那样它的坐标就不会被当成
+   * 「我确认过的判断」参与筛选。
+   */
+  analysisStatus: AnalysisStatus
+
   createdAt: string
   updatedAt: string
 }
