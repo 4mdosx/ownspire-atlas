@@ -2,6 +2,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { drizzle, type NodeSQLiteDatabase } from 'drizzle-orm/node-sqlite'
+// ⚠️ types/atlas.ts 是**纯类型 + 常量**，不 import 任何 db 模块 —— 所以这里
+// 静态 import 不会成环。它是维度定义的唯一真相来源，seed 只做一次性搬运。
+import { MONSTER_TAXONOMY, MONSTER_TAXONOMY_GROUPS } from '@/types/atlas'
 
 export type AppDatabase = NodeSQLiteDatabase
 
@@ -9,7 +12,24 @@ const dbPath = process.env.DB_FILE_NAME
   ? process.env.DB_FILE_NAME.replace(/^file:/, '')
   : path.join(process.cwd(), 'local.db')
 
-const sqlite = new DatabaseSync(dbPath)
+/**
+ * ⚠️ 连接**必须是可重开的**，不能是模块级常量。
+ *
+ * 原来这里是 `const sqlite = new DatabaseSync(dbPath)`，配合 `closeDatabase()`
+ * 就会把连接关掉且再也开不回来 —— 任何「关库 → 重开 → 验幂等」的路径都跑不了
+ * （2026-10-06 做设计空间迁移验证时踩到：`closeDatabase()` 之后任何查询都报
+ * `Failed query`，而症状完全指不到「连接已经关了」）。
+ *
+ * 所以用 getter 惰性打开，关掉后置空 —— 下次调用自动重连。
+ * ⚠️ 这是**懒打开**：不在 import 时建连接，那样才可能支持「先设
+ * DB_FILE_NAME 再首次打开」这种用法（验证脚本正需要这个）。
+ */
+let connection: DatabaseSync | null = null
+
+function sqlite(): DatabaseSync {
+  if (!connection) connection = new DatabaseSync(dbPath)
+  return connection
+}
 
 let schemaVersionApplied = 0
 const SCHEMA_VERSION = 2
@@ -26,17 +46,17 @@ const SCHEMA_VERSION = 2
  * 自动迁移的静默错误比停下来问更贵。0 条数据是这次改造唯一的便宜窗口。
  */
 function migrateLegacyMonsterEntries(): void {
-  const legacy = sqlite
+  const legacy = sqlite()
     .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='monster_entries'`)
     .get() as { name?: string } | undefined
   if (!legacy) return
 
   // 新 schema 的 monster_entries 没有 name 列 —— 有的话就是 legacy 表。
-  const columns = sqlite.prepare(`PRAGMA table_info(monster_entries)`).all() as Array<{ name: string }>
+  const columns = sqlite().prepare(`PRAGMA table_info(monster_entries)`).all() as Array<{ name: string }>
   const isLegacy = columns.some((column) => column.name === 'name')
   if (!isLegacy) return
 
-  const row = sqlite.prepare(`SELECT COUNT(*) AS n FROM monster_entries`).get() as { n: number }
+  const row = sqlite().prepare(`SELECT COUNT(*) AS n FROM monster_entries`).get() as { n: number }
   if (row.n > 0) {
     throw new Error(
       `检测到 v0.1 旧结构的 monster_entries 且有 ${row.n} 行数据。` +
@@ -44,12 +64,12 @@ function migrateLegacyMonsterEntries(): void {
         '先把数据导出成 v0.1 导出包，再清库重跑。',
     )
   }
-  sqlite.exec(`DROP TABLE monster_entries`)
+  sqlite().exec(`DROP TABLE monster_entries`)
 }
 
 function ensureSchema(): void {
   if (schemaVersionApplied >= SCHEMA_VERSION) return
-  sqlite.exec(`
+  sqlite().exec(`
     CREATE TABLE IF NOT EXISTS entries (
       id TEXT PRIMARY KEY,
       domain TEXT NOT NULL,
@@ -98,11 +118,12 @@ function ensureSchema(): void {
 
     CREATE TABLE IF NOT EXISTS entry_taxonomy (
       entryId TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+      spaceId TEXT NOT NULL DEFAULT '' REFERENCES design_spaces(id) ON DELETE CASCADE,
       dimensionKey TEXT NOT NULL,
       score REAL NOT NULL,
       setAt TEXT NOT NULL DEFAULT '',
       updatedAt TEXT NOT NULL,
-      PRIMARY KEY (entryId, dimensionKey)
+      PRIMARY KEY (entryId, spaceId, dimensionKey)
     );
 
     CREATE TABLE IF NOT EXISTS import_id_map (
@@ -110,6 +131,36 @@ function ensureSchema(): void {
       localId TEXT NOT NULL,
       importedAt TEXT NOT NULL
     );
+
+    -- ⭐ 设计空间与它的维度（2026-10-06）
+    CREATE TABLE IF NOT EXISTS design_spaces (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE,
+      labelZh TEXT NOT NULL,
+      labelEn TEXT NOT NULL DEFAULT '',
+      hintZh TEXT NOT NULL DEFAULT '',
+      sortOrder INTEGER NOT NULL DEFAULT 0,
+      isBuiltin INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS design_axes (
+      id TEXT PRIMARY KEY,
+      spaceId TEXT NOT NULL REFERENCES design_spaces(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      labelZh TEXT NOT NULL,
+      labelEn TEXT NOT NULL DEFAULT '',
+      hintZh TEXT NOT NULL DEFAULT '',
+      groupKey TEXT NOT NULL DEFAULT '',
+      anchorsJson TEXT NOT NULL DEFAULT '[]',
+      sortOrder INTEGER NOT NULL DEFAULT 0,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS design_axes_space_key ON design_axes(spaceId, key);
+    CREATE INDEX IF NOT EXISTS design_axes_space_idx ON design_axes(spaceId, sortOrder);
 
     CREATE INDEX IF NOT EXISTS entry_tags_tag_idx ON entry_tags(tagId, entryId);
     CREATE INDEX IF NOT EXISTS entry_tags_origin_idx ON entry_tags(origin, ruleId);
@@ -120,7 +171,142 @@ function ensureSchema(): void {
   `)
   addMissingColumns()
   migrateLegacyMonsterEntries()
+  migrateTaxonomySpace()
+  seedDesignSpaces()
   schemaVersionApplied = SCHEMA_VERSION
+}
+
+/**
+ * ⭐ `entry_taxonomy` 加 spaceId 且主键从 (entryId, dimensionKey) 变成三元组。
+ *
+ * ⚠️ **SQLite 的 `ALTER TABLE ADD COLUMN` 改不了主键**，所以必须重建表。
+ * 这不是「顺手加个列」，是结构性变更 —— 所以要把旧数据**搬过去**，而不是
+ * 建一张新表把旧表扔了。
+ *
+ * ⚠️ **旧数据全部归入「我的」空间**，这是语义判断而不是随便选：v0.2 时期打的
+ * 分，全部是「在我的设计语言里我认为它在哪」—— 与那次语义纠正（把「度量」
+ * 改成「我的设计空间」）是同一件事。所以搬到 `mine` 是准确的，不是权宜。
+ *
+ * ⚠️ **搬之前先查旧表存不存在**。全新库里上面那条 `CREATE TABLE IF NOT EXISTS`
+ * 已经建出了三元组版本，这时不该重建 —— 重建会把刚建的表连同刚写的种子一起
+ * 搞乱。判据是 `PRAGMA table_info` 里有没有 spaceId 列。
+ *
+ * ⚠️ 整个过程放在一个事务里：中途失败会留下半张表，而那比报错更难收拾。
+ */
+function migrateTaxonomySpace(): void {
+  const columns = sqlite().prepare('PRAGMA table_info(entry_taxonomy)').all() as Array<{ name: string }>
+  if (columns.length === 0) return // 表还不存在（全新库），上面的 CREATE 已经建对了
+  if (columns.some((item) => item.name === 'spaceId')) return // 已经迁过了
+
+  const mineId = 'space-mine'
+  const now = new Date().toISOString()
+
+  // ⚠️ 整个过程放在显式事务里：中途失败会留下半张表（旧的被 DROP 掉、
+  // 新的还没搬完），而那比报错更难收拾。
+  //
+  // ⚠️ 用 BEGIN/COMMIT 显式写，而不是假设 `sqlite().transaction()` —— node:sqlite
+  // 的 DatabaseSync **没有** transaction 方法（那是 better-sqlite3 才有的）。
+  // 这里的 try/catch 负责回滚。
+  sqlite().exec('BEGIN')
+  try {
+    // ⚠️ 先建空间，否则外键指向不存在的行会被 SQLite 拒绝（外键检查是开的）。
+    sqlite().exec(`
+      INSERT OR IGNORE INTO design_spaces (id, code, labelZh, labelEn, hintZh, sortOrder, isBuiltin, createdAt, updatedAt)
+      VALUES ('${mineId}', 'mine', '我的设计空间', 'My Space', '不是它客观有多强，是我认为它在哪', 10, 1, '${now}', '${now}');
+
+      CREATE TABLE entry_taxonomy_new (
+        entryId TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+        spaceId TEXT NOT NULL DEFAULT '' REFERENCES design_spaces(id) ON DELETE CASCADE,
+        dimensionKey TEXT NOT NULL,
+        score REAL NOT NULL,
+        setAt TEXT NOT NULL DEFAULT '',
+        updatedAt TEXT NOT NULL,
+        PRIMARY KEY (entryId, spaceId, dimensionKey)
+      );
+
+      INSERT INTO entry_taxonomy_new (entryId, spaceId, dimensionKey, score, setAt, updatedAt)
+        SELECT entryId, '${mineId}', dimensionKey, score, setAt, updatedAt FROM entry_taxonomy;
+
+      DROP TABLE entry_taxonomy;
+      ALTER TABLE entry_taxonomy_new RENAME TO entry_taxonomy;
+    `)
+    sqlite().exec('COMMIT')
+  } catch (error) {
+    sqlite().exec('ROLLBACK')
+    throw error
+  }
+}
+
+/**
+ * ⭐ 预置两个设计空间：「原作」与「我的」。
+ *
+ * ⚠️ **只有「我的」带维度，「原作」刻意留空。** 原作的维度取决于原作是什么
+ * 游戏 —— 蘑菇打的是HP/移动速度，Boss 战打的是威胁范围/技能组合。硬塞一套
+ * 预置维度进去，就等于又回到了「照搬原作的坐标系」，那正是这套系统要避开的事。
+ * 空着，等真的有原作需要填时再按那条原作的实际字段定义。
+ *
+ * ⚠️ 「我的」的维度从 `types/atlas.ts` 的 MONSTER_TAXONOMY 搬过来，只搬一次 ——
+ * 之后维度归数据库管（代码常量那份仅作为**首次初始化的种子**）。
+ * 留一份在代码里是为了让新库开箱就有一条完整的「我的」空间，而不是空表。
+ */
+function seedDesignSpaces(): void {
+  const now = new Date().toISOString()
+
+  const builtin = [
+    {
+      id: 'space-source',
+      code: 'source',
+      labelZh: '原作坐标系',
+      labelEn: 'Source',
+      hintZh: '原作里客观是什么样 —— 观察，不是我的判断',
+      sortOrder: 20,
+    },
+    {
+      id: 'space-mine',
+      code: 'mine',
+      labelZh: '我的设计空间',
+      labelEn: 'My Space',
+      hintZh: '不是它客观有多强，是我认为它在哪',
+      sortOrder: 10,
+    },
+  ]
+
+  for (const space of builtin) {
+    sqlite()
+      .prepare(
+        `INSERT OR IGNORE INTO design_spaces (id, code, labelZh, labelEn, hintZh, sortOrder, isBuiltin, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      )
+      .run(space.id, space.code, space.labelZh, space.labelEn, space.hintZh, space.sortOrder, now, now)
+  }
+
+  // 「我的」空间的维度：种子数据。插完即止（IGNORE），之后维度归 db 管。
+  const count = sqlite().prepare('SELECT count(*) AS n FROM design_axes WHERE spaceId = ?').get('space-mine') as { n: number }
+  if (count.n > 0) return
+
+  // ⚠️ 这里刻意从 types/atlas.ts import 而不是把维度定义搬进 database.ts：
+  // 定义仍然在那里（那是唯一的真相来源），db 只做一次性的搬运。
+  const groupLabel = new Map(MONSTER_TAXONOMY_GROUPS.map((group) => [group.key, group]))
+  const insert = sqlite().prepare(
+    `INSERT OR IGNORE INTO design_axes (id, spaceId, key, labelZh, labelEn, hintZh, groupKey, anchorsJson, sortOrder, createdAt, updatedAt)
+     VALUES (?, 'space-mine', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+  let order = 0
+  for (const axis of MONSTER_TAXONOMY) {
+    const group = groupLabel.get(axis.group)
+    insert.run(
+      `axis-${axis.key}`,
+      axis.key,
+      axis.labelZh,
+      axis.labelEn,
+      axis.hintZh,
+      `${group?.labelZh ?? ''}|${group?.labelEn ?? ''}`,
+      JSON.stringify(axis.anchors),
+      (order += 10),
+      now,
+      now,
+    )
+  }
 }
 
 /**
@@ -157,19 +343,19 @@ const COLUMNS_TO_ADD: ReadonlyArray<{ table: string; column: string; ddl: string
 
 function addMissingColumns(): void {
   for (const { table, column, ddl } of COLUMNS_TO_ADD) {
-    const existing = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+    const existing = sqlite().prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
     // 表本身可能还不存在（全新库）—— 那时 CREATE TABLE 已经带上了新列。
     if (existing.length === 0) continue
     if (existing.some((item) => item.name === column)) continue
-    sqlite.exec(ddl)
+    sqlite().exec(ddl)
   }
 
   // entries.notes 是已废弃的别名。新库不写它，但老库里已有内容 ——
   // **保守地搬进 observed**：不猜用户哪些是判断，猜错比不猜贵。
   // 要挪的话用户在界面上自己动手。
-  const columns = sqlite.prepare('PRAGMA table_info(entries)').all() as Array<{ name: string }>
+  const columns = sqlite().prepare('PRAGMA table_info(entries)').all() as Array<{ name: string }>
   if (!columns.some((item) => item.name === 'notes')) return
-  sqlite.exec(
+  sqlite().exec(
     `UPDATE entries SET observed = notes WHERE observed = '' AND notes != ''`,
   )
 }
@@ -201,18 +387,25 @@ const globalForDb = globalThis as unknown as { db: AppDatabase | undefined }
 
 export function pingDatabase(): void {
   ensureSchema()
-  sqlite.prepare('SELECT 1').get()
+  sqlite().prepare('SELECT 1').get()
 }
 
 export async function getDatabase(): Promise<AppDatabase> {
   ensureSchema()
-  if (!globalForDb.db) globalForDb.db = drizzle({ client: sqlite })
+  if (!globalForDb.db) globalForDb.db = drizzle({ client: sqlite() })
   return globalForDb.db
 }
 
 export async function closeDatabase(): Promise<void> {
   globalForDb.db = undefined
-  sqlite.close()
+  // ⚠️ 必须置空 connection —— 否则下次 `sqlite()` 拿到的是已关闭的句柄，
+  // 症状是 `Failed query: ...`，完全指不到「连接已经关了」。
+  connection?.close()
+  connection = null
+  // ⚠️ schemaVersionApplied 也必须清零 —— 不然重开后 ensureSchema 会因为
+  // 「本进程迁移过了」直接 return，跳过所有建表与迁移。新连接面对的是同一个
+  // 文件，理应重新确认一次结构。
+  schemaVersionApplied = 0
 }
 
 /** 容器启动前先探测数据库可用 —— /healthz 要返回这个。 */

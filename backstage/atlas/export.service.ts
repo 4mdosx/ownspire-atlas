@@ -16,19 +16,26 @@ import type { DomainCode, EntryTag, MonsterExtension, TaxonomyDimensionKey } fro
  *   media/<relative>   ← 图片本体
  * ```
  *
- * ⚠️ **formatVersion 3**（v0.1 是 1，v0.2 是 2）。相对 2 的改动：
- * · `notes` 拆成 `observed`（我看到了什么）+ `read`（我认为它为什么成立）
- * · 新增 `worthwhileBecause`（我为什么留着它）
- * · tag 带上 `group`（命名空间）
+ * ⚠️ **formatVersion 4**（v0.1 是 1，v0.2 是 2，v0.3 是 3）。相对 3 的改动：
+ * · 新增 `scoresBySpace` —— **一个 entry 在全部设计空间下的坐标**
+ * · 新增 `spaces` / `axes` —— 空间与坐标轴定义
+ * · 删掉 `taxonomy`（单空间那份）—— 留着它会让人以为只有一组坐标，
+ *   而那正是 v4 要消除的歧义
  *
- * ⚠️ **这是破坏性变更，所以升版本号而不是悄悄加字段。**
- * v0.2 建立的纪律在这里兑现：v2 的包里 `notes` 装着观察与判断的混合，
- * 导入到 v3 无法自动拆分（猜错比不猜贵）。所以 v2 的包**不兼容**，
- * 导入端明确报错—— 至少不会让人以为数据完整地过来了。
+ * ⚠️ **为什么必须带上轴的定义**：坐标是 0–1 的浮点数，不带档位词的话
+ * 换台机器导入就只剩「0.42」，而没人知道它代表「giant」还是「high mobility」。
+ * 那样的导出包**看着成功、实则丢掉了全部语义**。
  *
- * v1 与 v2 的包同样不兼容，错误信息各不相同。
+ * ⚠️ 历史版本的兼容性：
+ * · v1 → 报错（无 domain / taxonomy / tag 来源）
+ * · v2 → 报错（notes 装着观察与判断的混合体，自动拆分只能靠猜）
+ * · v3 → 报错（只有单空间坐标，导入进多空间模型会被当成「我的」那一组，
+ *   静默丢掉原作与项目坐标 —— 那比报错糟得多）
+ *
+ * **不猜，不兼容就报错**是 v0.2 起的纪律，在这里第一次真正兑现：
+ * 三个版本各自的原因不同，错误信息必须说清是哪一种。
  */
-export const EXPORT_FORMAT_VERSION = 3
+export const EXPORT_FORMAT_VERSION = 4
 
 export type ExportTag = {
   name: string
@@ -36,6 +43,29 @@ export type ExportTag = {
   ruleId: string
   /** 命名空间（formatVersion 3 起）。空串 = 还没归类。 */
   group: string
+}
+
+/** 设计空间（formatVersion 4 起）。⚠️ 用 code 而非 id 做身份。 */
+export type ExportSpace = {
+  code: string
+  labelZh: string
+  labelEn: string
+  hintZh: string
+  sortOrder: number
+  isBuiltin: boolean
+}
+
+/** 一条坐标轴（formatVersion 4 起）。 */
+export type ExportAxis = {
+  spaceCode: string
+  key: string
+  labelZh: string
+  labelEn: string
+  hintZh: string
+  groupLabelZh: string
+  groupLabelEn: string
+  anchors: string[]
+  sortOrder: number
 }
 
 export type ExportEntry = {
@@ -67,8 +97,16 @@ export type ExportEntry = {
   createdAt: string
   updatedAt: string
   tags: ExportTag[]
-  /** 部分 Record：只出现打过分且该 domain 有定义的维度。 */
-  taxonomy: Partial<Record<TaxonomyDimensionKey, number>>
+  /**
+   * ⭐ 全部设计空间的坐标（formatVersion 4 起）。
+   *
+   * ⚠️ **是全部空间，不是当前那个。** 导出时只带「我的」等于把原作坐标
+   * 和项目坐标悄悄丢掉 —— 而导出包的用途就是「完整搬走」。
+   *
+   * ⚠️ key 是空间 `code`（不是 id）：id 是本地数据，code 才是跨机器稳定的
+   * 标识。用 id 的话，导出到另一台机器上就对不上了。
+   */
+  scoresBySpace: Record<string, Record<string, number>>
   /** domain 专属结构化字段。非 monster 为 null。 */
   extension: MonsterExtension | null
 }
@@ -80,6 +118,15 @@ export type ExportManifest = {
   domains: DomainCode[]
   entryCount: number
   entries: ExportEntry[]
+  /**
+   * 空间与轴定义（formatVersion 4 起）。
+   *
+   * ⚠️ 这是**全局**的，不在每条 entry 里重复 —— 空间是库级的东西，
+   * 而坐标轴的数量会随着采集增长。放全局让包小，也让「这个库里有哪些轴」
+   * 一眼可查（而那正是「导出包能不能被读懂」的关键）。
+   */
+  spaces: ExportSpace[]
+  axes: ExportAxis[]
   /** 附在包里，方便日后溯源。 */
   provenance: {
     source: 'creative-atlas'
@@ -87,7 +134,12 @@ export type ExportManifest = {
   }
 }
 
-export async function writeExport(entries: ExportEntry[], stamp: string): Promise<string> {
+export async function writeExport(
+  entries: ExportEntry[],
+  stamp: string,
+  spaces: ExportSpace[] = [],
+  axes: ExportAxis[] = [],
+): Promise<string> {
   const root = path.join(mediaRoot(), '..', `atlas-export-${stamp}`)
   await fs.mkdir(root, { recursive: true })
 
@@ -115,6 +167,8 @@ export async function writeExport(entries: ExportEntry[], stamp: string): Promis
     domains: [...new Set(entries.map((entry) => entry.domain))],
     entryCount: entries.length,
     entries,
+    spaces,
+    axes,
     provenance: {
       source: 'creative-atlas',
       note: '个人创意采集库导出。图片以相对路径随包携带，可整体拷贝。',

@@ -5,7 +5,7 @@ import { ExternalLink, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input, Textarea } from '@/components/ui/input'
 import { TaxonomyRow } from './taxonomy-stars'
-import { dimensionsInGroup, dimensionsOf, domainOf, groupsOf, STATUS_LABEL, TAG_GROUP_HINT, TAG_GROUP_KEYS, TAG_GROUP_LABEL, type DomainCode, type EntryDetail, type EntryStatus, type TaxonomyDimensionKey } from '@/types/atlas'
+import { domainOf, STATUS_LABEL, TAG_GROUP_HINT, TAG_GROUP_KEYS, TAG_GROUP_LABEL, type DesignAxis, type DesignSpace, type EntryDetail, type EntryStatus } from '@/types/atlas'
 
 /**
  * Detail 抽屉 —— 点卡片后从右侧滑出。
@@ -26,14 +26,71 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
   const [grouping, setGrouping] = useState<string | null>(null)
   const [error, setError] = useState('')
 
+  /**
+   * ⭐ 当前编辑的设计空间（2026-10-06）。
+   *
+   * 切空间会重新拉这条记录的坐标 —— 因为两个空间里存的是**不同的值**：
+   * 「原作的移动性」与「我的移动性」是两个不同的问题。共用一份 draft 会让
+   * 一边的分数显示在另一边，而那正是这套结构要消除的歧义。
+   */
+  const [spaces, setSpaces] = useState<DesignSpace[]>([])
+  const [axes, setAxes] = useState<DesignAxis[]>([])
+  const [spaceId, setSpaceId] = useState('space-mine')
+
   useEffect(() => setDraft(entry), [entry.id, entry.updatedAt])
+
+  /** 空间列表只拉一次 —— 它不长在 entry 上。 */
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const response = await fetch('/api/atlas/spaces')
+      const body = await response.json()
+      if (cancelled || !response.ok || !body.success) return
+      setSpaces(body.data)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  /**
+   * 换空间 → 重新拉该空间下的维度定义 + 这条记录在该空间的坐标。
+   *
+   * ⚠️ 两个请求必须一起发：坐标要按空间读，维度也要按空间取。拿「我的」的
+   * 分数配「原作」的档位词，界面上会显示成「原作 · giant」，而那条记录
+   * 在原作空间里根本没有这个轴 —— 分数与档位对不上。
+   */
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const [axesRes, entryRes] = await Promise.all([
+        fetch(`/api/atlas/spaces?axesOf=${encodeURIComponent(spaceId)}`),
+        fetch(`/api/atlas/entries/${entry.id}?spaceId=${encodeURIComponent(spaceId)}`),
+      ])
+      const [axesBody, entryBody] = await Promise.all([axesRes.json(), entryRes.json()])
+      if (cancelled) return
+      if (axesRes.ok && axesBody.success) setAxes(axesBody.data)
+      if (entryRes.ok && entryBody.success) {
+        setDraft(entryBody.data)
+        onChange(entryBody.data)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // ⚠️ onChange 不进依赖：它是父组件的回调，进依赖会在每次父级重渲染时
+    // 重拉这条记录 —— 而这会触发 onChange，形成死循环。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spaceId, entry.id])
 
   const patch = async (changes: Record<string, unknown>) => {
     setError('')
     const response = await fetch(`/api/atlas/entries/${entry.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(changes),
+      // ⚠️ spaceId 必须跟着走：坐标写到哪个空间由它决定。不传就默认写到
+      // 「我的」—— 于是用户在「原作」视图里打分，分数却落进了另一个空间。
+      body: JSON.stringify({ ...changes, spaceId }),
     })
     const body = await response.json()
     if (!response.ok || !body.success) return setError(body.error || '保存失败')
@@ -107,9 +164,24 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
   }
 
   const domain = domainOf(draft.domain)
-  const dimensions = dimensionsOf(draft.domain)
+  const currentSpace = spaces.find((space) => space.id === spaceId) ?? null
   const userTags = draft.tags.filter((tag) => tag.origin === 'user')
   const systemTags = draft.tags.filter((tag) => tag.origin === 'system')
+
+  /**
+   * ⭐ 按 group 归拢当前空间的维度。
+   *
+   * ⚠️ **group 只管排版**：空分组的轴不能被丢掉 —— 那会造成「这条轴不见了」
+   * 的静默丢失（2026-10-06 在上一轮踩过一次同类坑）。所以无组的轴挂到
+   * 一个兜底分组里，而不是被 filter 掉。
+   */
+  const axisGroups = axes.reduce<Map<string, DesignAxis[]>>((map, axis) => {
+    const key = axis.group.labelZh || ''
+    const list = map.get(key) ?? []
+    list.push(axis)
+    map.set(key, list)
+    return map
+  }, new Map())
 
   return (
     <>
@@ -163,68 +235,85 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
             </a>
           </section>
 
-          {/* ⭐ taxonomy —— 连续打分，与 tag 无关。维度由 domain 决定，
-              按 group 分块：形态 / 战斗。分组是为了让「哪几个轴在问同一件事」
-              一眼可见，不是为了好看。 */}
-          {dimensions.length > 0 && (
-            <section>
-              {/*
-                ⭐⭐ 标题从「度量」改成「我的设计空间」—— 这不是文案调整，
-                是语义纠正（2026-10-06）。
+          {/*
+            ⭐⭐ 设计空间 —— 一个 entry 在每个空间下各有一组独立坐标。
 
-                原来的读法是「这个怪有多大的体量」，那是在记录**它的属性**——
-                照搬原游戏的坐标系，做出来就是 wiki。而这里记的是
-                **「在我的设计语言里，我把它放在哪」**：Reference 是输入，
-                坐标是我的解读。
+            这不是「分类归档」而是**语义分离**：「原作的移动性」与「我的移动性」
+            是两个不同的问题（对原作的观察 vs 对原作的解读）。挤在一列时，
+            半年后把0.70 改成 0.55 就无法判断自己在改什么 —— 于是不敢改，
+            不敢改的坐标系会慢慢变成不可动的客观事实，那时 Atlas 就是 wiki 了。
 
-                差别的实际后果：半年后把 0.70 改成 0.55，若按「属性」读就只能
-                理解成「之前记错了」；按「我的判断」读，它是「我对怪物设计的
-                理解变了」—— 不是错误，是成长。后一种读法才敢改分。
-              */}
-              <h3 className="mb-0.5 text-xs font-semibold">
-                我的设计空间
-                <span className="ml-1.5 font-normal text-muted-foreground">
-                  不是我设计它多强，是我认为它在哪
+            空间切换器放在这一节的标题行：它决定的是「下面这些分数在回答
+            哪个问题」，所以必须在读分数之前就能看到。
+          */}
+          <section>
+            <div className="mb-1.5 flex items-center gap-2">
+              <h3 className="text-xs font-semibold">设计空间</h3>
+              {spaces.length > 1 && (
+                <select
+                  aria-label="设计空间"
+                  value={spaceId}
+                  onChange={(event) => setSpaceId(event.target.value)}
+                  className="h-6 rounded border bg-transparent px-1 text-[11px] outline-none"
+                >
+                  {spaces.map((space) => (
+                    <option key={space.id} value={space.id}>
+                      {space.labelZh}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+            {currentSpace && (
+              <p className="mb-1.5 text-[10px] text-muted-foreground">{currentSpace.hintZh}</p>
+            )}
+
+            {axes.length === 0 ? (
+              <p className="rounded-md border border-dashed px-3 py-4 text-center text-[11px] text-muted-foreground">
+                这个空间还没有坐标轴。
+                <br />
+                <span className="opacity-70">
+                  {currentSpace?.code === 'source'
+                    ? '原作的坐标取决于原作是什么游戏 —— 等真的需要时按那条原作的实际字段定义'
+                    : '先给它加几条轴，再开始记'}
                 </span>
-              </h3>
-              <p className="mb-1 text-[10px] text-muted-foreground">
-                点档位词直接定档，星星微调。全灰 = 还没想好（不等于 0 分），数字框可填到 0.01。
-                <span className="ml-1">改分随时可以 —— 那是判断变了，不是记错了。</span>
               </p>
-              {groupsOf(draft.domain).map((group) => {
-                const groupDimensions = dimensionsInGroup(draft.domain, group.key)
-                if (groupDimensions.length === 0) return null
-                return (
-                  <div key={group.key} className="mt-2 rounded-md border px-3 pb-1 pt-2">
+            ) : (
+              <>
+                <p className="mb-1 text-[10px] text-muted-foreground">
+                  点档位词直接定档，星星微调。全灰 = 还没想好（不等于 0 分）。
+                  <span className="ml-1">改分随时可以 —— 那是判断变了，不是记错了。</span>
+                </p>
+                {[...axisGroups.entries()].map(([groupKey, groupAxes]) => (
+                  <div key={groupKey || 'ungrouped'} className="mt-2 rounded-md border px-3 pb-1 pt-2">
                     <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                      {group.labelZh} <span className="font-normal normal-case tracking-normal">{group.labelEn}</span>
-                      <span className="ml-1.5 font-normal normal-case tracking-normal">{group.hintZh}</span>
+                      {groupKey || '未分组'}
                     </p>
                     <div className="divide-y">
-                      {groupDimensions.map((dimension) => (
+                      {groupAxes.map((axis) => (
                         <TaxonomyRow
-                          key={dimension.key}
-                          dimension={dimension}
-                          value={draft.taxonomy[dimension.key]}
+                          key={axis.key}
+                          dimension={axis}
+                          value={draft.taxonomy[axis.key]}
                           onChange={(score) => {
-                            const next = { ...draft.taxonomy, [dimension.key]: score }
+                            const next = { ...draft.taxonomy, [axis.key]: score }
                             setDraft({ ...draft, taxonomy: next })
-                            void patch({ taxonomy: { [dimension.key]: score } })
+                            void patch({ taxonomy: { [axis.key]: score } })
                           }}
                           onClear={() => {
                             const next = { ...draft.taxonomy }
-                            delete next[dimension.key as TaxonomyDimensionKey]
+                            delete next[axis.key as keyof typeof next]
                             setDraft({ ...draft, taxonomy: next })
-                            void patch({ clearDimension: dimension.key })
+                            void patch({ clearDimension: axis.key })
                           }}
                         />
                       ))}
                     </div>
                   </div>
-                )
-              })}
-            </section>
-          )}
+                ))}
+              </>
+            )}
+          </section>
 
           <section>
             <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">

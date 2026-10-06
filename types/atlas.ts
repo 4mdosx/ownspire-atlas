@@ -77,6 +77,63 @@ export function domainOf(code: string): DomainDef | null {
  * 扁平结构该背的债，不该让数据模型替界面的分组长久买单。
  * ────────────────────────────────────────────────────────────── */
 
+/* ──────────────────────────────────────────────────────────────
+ * ⭐⭐ 设计空间（2026-10-06）
+ *
+ * 一个 entry 在每个空间下各有一组独立坐标。空间本身是**数据**（可建、可增），
+ * 因为「原作」的维度取决于原作是什么游戏、「项目」的维度每个项目都不一样 ——
+ * 这两类都不可能活在代码常量里。
+ *
+ * ⚠️ 空间之间**不共享维度**。`我的.mobility` 与 `原作.mobility` 是两个不同的
+ * 问题，硬塞进一个共享定义恰好把这里要分开的区别又合回去。
+ *
+ * ⚠️ 下面那份 MONSTER_TAXONOMY 现在只是**首次初始化的种子** —— 维度归数据库
+ * 管之后，它不再被写入侧当作权威来源读。留着是为了让新库开箱就有完整的
+ * 「我的」空间，而不是空表。
+ * ────────────────────────────────────────────────────────────── */
+
+export type DesignSpace = {
+  id: string
+  /** 稳定标识。代码与脚本认它，不认 id。 */
+  code: string
+  labelZh: string
+  labelEn: string
+  /** 一句话：这个空间里记的是什么。 */
+  hintZh: string
+  /** 小 = 靠前。「我的」(10) 排在「原作」(20) 前面，因为采集时最常写的是它。 */
+  sortOrder: number
+  /** 预置空间（原作 / 我的）不可删。 */
+  isBuiltin: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export type DesignAxisGroup = {
+  labelZh: string
+  labelEn: string
+}
+
+export type DesignAxis = {
+  id: string
+  spaceId: string
+  /** 空间内唯一的短key，写入侧用它定位。 */
+  key: string
+  labelZh: string
+  labelEn: string
+  hintZh: string
+  /** 展示分组。只影响排版，不影响坐标语义。 */
+  group: DesignAxisGroup
+  /** 完整档位，从低到高。⚠️ 不是示例词 —— 用户只敢在看得见的档位里选。 */
+  anchors: string[]
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+/** 系统预置的两个空间的 code。 */
+export const SPACE_SOURCE = 'source'
+export const SPACE_MINE = 'mine'
+
 export type TaxonomyDimensionKey = 'form' | 'scale' | 'movement' | 'combat' | 'role'
 
 /** 维度的归类 group —— 纯展示用，不进数据库。 */
@@ -242,7 +299,14 @@ export function starsToScore(star: number): number {
  * 3 档的轴落在 0.33 / 0.67（round2 后0.34 / 0.66 是显示层的妥协，存的是
  * 精确值）；5 档 → 0.2/0.4/0.6/0.8；6 档 → 0.17/0.33/0.5/0.67/0.83。
  */
-export function anchorToScore(dimension: TaxonomyDimensionDef, anchor: string): number | null {
+/**
+ * ⚠️ 参数是**最小形状** `{ anchors: readonly string[] }` 而不是
+ * `TaxonomyDimensionDef` —— 因为坐标轴现在有两种来源：代码里的
+ * TaxonomyDimensionDef（首次种子）与数据库里的 DesignAxis。它们对
+ * 「档位 → 分数」是同一套规则，写死具体类型就等于逼着写两份实现，
+ * 而两份实现早晚有一处忘了改，且那种 bug 只在数据里显形。
+ */
+export function anchorToScore(dimension: { anchors: readonly string[] }, anchor: string): number | null {
   const index = dimension.anchors.findIndex((item) => item === anchor)
   if (index < 0 || dimension.anchors.length === 0) return null
   // (index + 1) / (length + 1)：第 1 档在1/(n+1)，最后一档在 n/(n+1)，永不等于 1。
@@ -250,7 +314,7 @@ export function anchorToScore(dimension: TaxonomyDimensionDef, anchor: string): 
 }
 
 /** score → 最接近的档位词。用于把已存的score 显示成「huge」这样的词。 */
-export function scoreToAnchor(dimension: TaxonomyDimensionDef, score: number): string | null {
+export function scoreToAnchor(dimension: { anchors: readonly string[] }, score: number): string | null {
   if (score === undefined) return null
   const target = clampScore(score)
   let best: string | null = null
@@ -484,12 +548,26 @@ export type MonsterExtension = {
  */
 export type EntryDetail = Entry & {
   tags: EntryTag[]
-  taxonomy: Partial<Record<TaxonomyDimensionKey, number>>
+  /**
+   * ⭐ 坐标。key 是**该空间下的轴 key**，不是固定枚举（2026-10-06）。
+   *
+   * ⚠️ 维度定义搬进数据库之后，轴的集合随设计空间变化，所以这里不能再是
+   * `Partial<Record<TaxonomyDimensionKey, ...>>` 那种固定键 —— 那会让每加
+   * 一条轴都要改类型定义，而那正是「维度该归数据库管」这件事要摆脱的。
+   */
+  taxonomy: Partial<Record<string, number>>
   extension: MonsterExtension | null
 }
 
 /** 列表页卡片：不含 extension 的派生内容，但要够画卡片。 */
 export type EntrySummary = Entry & {
   tags: EntryTag[]
-  taxonomy: Partial<Record<TaxonomyDimensionKey, number>>
+  /**
+   * ⭐ 坐标。key 是**该空间下的轴 key**，不是固定枚举（2026-10-06）。
+   *
+   * ⚠️ 维度定义搬进数据库之后，轴的集合随设计空间变化，所以这里不能再是
+   * `Partial<Record<TaxonomyDimensionKey, ...>>` 那种固定键 —— 那会让每加
+   * 一条轴都要改类型定义，而那正是「维度该归数据库管」这件事要摆脱的。
+   */
+  taxonomy: Partial<Record<string, number>>
 }

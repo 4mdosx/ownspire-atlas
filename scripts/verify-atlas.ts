@@ -367,6 +367,93 @@ async function main(): Promise<void> {
     }
   }
 
+  // 35. ⭐ 多设计空间的坐标读写（2026-10-06）
+  // 重点验「两个空间的同名轴互不覆盖」—— 那是这整个改动要解决的歧义，
+  // 而它出问题时**不报错**，只是分数悄悄不见了。
+  {
+    const { listDesignSpaces, createDesignAxis, findSpaceByCode, listDesignAxes, createDesignSpace } = await import('@/backstage/atlas/space.service')
+    const { setTaxonomy, allScoresOf } = service
+
+    const spaces = await listDesignSpaces()
+    const mine = spaces.find((s) => s.code === 'mine')!
+    const source = spaces.find((s) => s.code === 'source')!
+    check('拿到「我的」空间', mine !== undefined, mine?.id)
+    check('拿到「原作」空间', source !== undefined, source?.id)
+
+    // ⚠️ 先给「原作」空间加一条与「我的」**同名**的轴 —— 只有同名才能验出覆盖。
+    // 「原作」刻意留空是因为它的维度取决于原作是什么游戏；这里加一条纯粹
+    // 为了证明「同名也不会互相覆盖」。
+    await createDesignAxis({
+      spaceId: source.id,
+      key: 'mobility',
+      labelZh: '移动性',
+      anchors: ['不动', '缓慢', '快速', '瞬移'],
+    })
+    check('「原作」空间可以有轴', (await listDesignAxes(source.id)).length === 1)
+
+    const subject = await createEntry({
+      domain: monster,
+      name: '同名轴测试',
+      sourceUrl: 'https://example.com/dual',
+    })
+
+    // ⚠️ 「我的」空间里那条轴叫 `movement` 不叫 `mobility` —— 同名轴要自己造：
+    // 往「我的」加一条 mobility 会污染那个空间，而测试不该留下痕迹。
+    const mineAxes = await listDesignAxes(mine.id)
+    const mineAxisKey = mineAxes[0]?.key ?? 'form'
+    await setTaxonomy(subject.id, { [mineAxisKey]: 0.2 }, mine.id)
+    await setTaxonomy(subject.id, { mobility: 0.8 }, source.id)
+
+    // ⭐ 核心断言：两个空间的同名轴分数必须都在，且不相等
+    const mineScores = await getEntryDetail(subject.id, mine.id)
+    const sourceScores = await getEntryDetail(subject.id, source.id)
+    check('「我的」空间读到自己的分', mineScores.taxonomy[mineAxisKey] === 0.2, `${mineAxisKey}=${String(mineScores.taxonomy[mineAxisKey])}`)
+    check('「原作」空间读到自己的分', sourceScores.taxonomy['mobility'] === 0.8, String(sourceScores.taxonomy['mobility']))
+    check('「我的」空间不含「原作」的 mobility 轴', mineScores.taxonomy['mobility'] === undefined, String(mineScores.taxonomy['mobility']))
+    check('「原作」空间不含「我的」的轴', sourceScores.taxonomy[mineAxisKey] === undefined, String(sourceScores.taxonomy[mineAxisKey]))
+
+    // 清除也要按空间隔离
+    await clearTaxonomyDimension(subject.id, 'mobility', source.id)
+    const afterClear = await getEntryDetail(subject.id, mine.id)
+    check('清「原作」的轴不动「我的」', afterClear.taxonomy[mineAxisKey] === 0.2, String(afterClear.taxonomy[mineAxisKey]))
+
+    // 未知空间应被拒 —— 空间 id 是外键，db 会拦，但错误信息要可读
+    try {
+      await setTaxonomy(subject.id, { mobility: 0.5 }, 'space-nope')
+      check('不存在的空间应被拒', false, '居然没报错')
+    } catch (error) {
+      check('不存在的空间应被拒', true, error instanceof Error ? error.message.slice(0, 40) : '')
+    }
+
+    // 空空间写入应被明确拒绝，而不是静默丢数据
+    const emptySpace = await createDesignSpace({ code: 'proj-empty', labelZh: '空项目空间' })
+    try {
+      await setTaxonomy(subject.id, { anything: 0.5 }, emptySpace.id)
+      check('往没有轴的空间写应被拒', false, '居然没报错')
+    } catch (error) {
+      check('往没有轴的空间写应被拒', true, error instanceof Error ? error.message : '')
+    }
+
+    // allScoresOf 必须按空间分开返回
+    const all = await allScoresOf(subject.id)
+    const codeOf = new Map(spaces.map((s) => [s.id, s.code]))
+    const mineByCode = all[codeOf.get(mine.id) ?? '']
+    check('allScoresOf 按空间分组', Boolean(mineByCode), JSON.stringify(Object.keys(all)))
+    check('allScoresOf 里的值正确', mineByCode?.[mineAxisKey] === 0.2, String(mineByCode?.[mineAxisKey]))
+
+    // 项目空间可自建，code 校验要挡住非法值
+    const proj = await createDesignSpace({ code: 'project-mr', labelZh: 'Maple Rouge', hintZh: '项目坐标系' })
+    check('项目空间可自建', proj.code === 'project-mr', proj.code)
+    check('自建空间不是预置', proj.isBuiltin === false)
+    try {
+      await createDesignSpace({ code: '有中文', labelZh: '非法 code' })
+      check('非法 code 应被拒', false, '居然建成功了')
+    } catch (error) {
+      check('非法 code 应被拒', true, error instanceof Error ? error.message : '')
+    }
+    check('findSpaceByCode 按 code 查', (await findSpaceByCode('project-mr'))?.id === proj.id)
+  }
+
   await db.closeDatabase()
   fs.rmSync(`/tmp/atlas-verify-${stamp}.db`, { force: true })
   fs.rmSync(mediaRoot, { recursive: true, force: true })

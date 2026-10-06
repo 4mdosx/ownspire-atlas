@@ -15,6 +15,7 @@
     "reset-db": "tsx backstage/db/reset-db.ts",
     "verify": "node --conditions react-server --import tsx scripts/verify-atlas.ts",
     "verify:grid": "node --import tsx scripts/verify-grid.tsx",
+    "verify:space": "node --conditions react-server --import tsx scripts/verify-space-migration.ts",
     "pm2:start": "next build && pm2 start ecosystem.config.js",
     "pm2:stop": "pm2 stop creative-atlas",
     "pm2:restart": "pm2 restart creative-atlas"

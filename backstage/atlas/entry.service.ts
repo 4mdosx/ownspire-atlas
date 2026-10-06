@@ -5,7 +5,8 @@ import { and, asc, desc, eq, inArray, like, notExists, or, sql } from 'drizzle-o
 import { getDatabase } from '@/backstage/db/database'
 import { entries, entryTags, entryTaxonomy, importIdMap, monsterEntries, tags } from '@/backstage/db/schema'
 import { attachEntryTagsByName, findOrCreateTag, tagsForEntries } from './tag.service'
-import { dimensionKeysOf, ENTRY_STATUSES, isDomainCode, type DomainCode, type EntryDetail, type EntryStatus, type EntrySummary, type ImageSource, type MonsterExtension, type TagOrigin, type TaxonomyDimensionKey } from '@/types/atlas'
+import { listDesignAxes, listDesignSpaces } from './space.service'
+import { ENTRY_STATUSES, isDomainCode, type DomainCode, type EntryDetail, type EntryStatus, type EntrySummary, type ImageSource, type MonsterExtension, type TagOrigin, type TaxonomyDimensionKey } from '@/types/atlas'
 
 const MAX_NAME = 120
 const MAX_URL = 2000
@@ -118,7 +119,9 @@ export type CreateEntryInput = {
   status?: EntryStatus
   tagNames?: string[]
   /** 部分 Record，只写打过的维度。没给的维度不入库。 */
-  taxonomy?: Partial<Record<TaxonomyDimensionKey, number>>
+  taxonomy?: Partial<Record<string, number>>
+  /** ⭐ 坐标写到哪个空间。默认「我的」。 */
+  taxonomySpaceId?: string
   /** monster 专属结构化字段。 */
   extension?: Partial<Omit<MonsterExtension, 'entryId'>>
 }
@@ -131,17 +134,46 @@ export type UpdateEntryInput = Partial<Omit<CreateEntryInput, 'imagePath' | 'dom
    */
 }
 
-/** 批量读 taxonomy。只查需要的维度列 —— 5 个维度全查是不必要的IO。 */
+/**
+ * 批量读坐标。**按空间分组** —— 一个 entry 在每个空间下各有一组独立坐标，
+ * 所以返回值是 `{ entryId → { spaceId → { 维度key → score } } }`。
+ *
+ * ⚠️ 以前是一维的（entryId → {key → score}），那时只有一个空间。现在必须分层：
+ * 不分层的话「原作的移动性」和「我的移动性」会互相覆盖 —— 那正是
+ * designSpaces 的注释里要避免的那个歧义。
+ *
+ * ⚠️ **默认只读「我的」空间**给卡片用（`readSpaceId`），而不是把两个空间的
+ * 坐标混在一起返回 —— 卡片上那个小圆点是「我评过几条轴」，把原作的分数算
+ * 进去会让「我到底评没评过」变得不可答。
+ */
 async function taxonomyForEntries(
   ids: string[],
+  readSpaceId?: string,
 ): Promise<Map<string, Partial<Record<TaxonomyDimensionKey, number>>>> {
   const map = new Map<string, Partial<Record<TaxonomyDimensionKey, number>>>()
   if (ids.length === 0) return map
   const db = await getDatabase()
-  const rows = await db
-    .select({ entryId: entryTaxonomy.entryId, dimensionKey: entryTaxonomy.dimensionKey, score: entryTaxonomy.score })
-    .from(entryTaxonomy)
-    .where(inArray(entryTaxonomy.entryId, ids))
+  // ⚠️ 传了 readSpaceId 就只取那个空间；没传就**全部取回并合并** ——
+  // 合并只在调用方明确要「跨空间总览」时才对，列表页走的是带 spaceId 的路径。
+  const rows = readSpaceId
+    ? await db
+        .select({
+          entryId: entryTaxonomy.entryId,
+          spaceId: entryTaxonomy.spaceId,
+          dimensionKey: entryTaxonomy.dimensionKey,
+          score: entryTaxonomy.score,
+        })
+        .from(entryTaxonomy)
+        .where(and(inArray(entryTaxonomy.entryId, ids), eq(entryTaxonomy.spaceId, readSpaceId)))
+    : await db
+        .select({
+          entryId: entryTaxonomy.entryId,
+          spaceId: entryTaxonomy.spaceId,
+          dimensionKey: entryTaxonomy.dimensionKey,
+          score: entryTaxonomy.score,
+        })
+        .from(entryTaxonomy)
+        .where(inArray(entryTaxonomy.entryId, ids))
   for (const row of rows) {
     const bucket = map.get(row.entryId) ?? {}
     bucket[row.dimensionKey as TaxonomyDimensionKey] = row.score
@@ -150,12 +182,55 @@ async function taxonomyForEntries(
   return map
 }
 
-export async function getEntryDetail(id: string): Promise<EntryDetail> {
+/**
+ * 某条记录在**全部空间**下的坐标。导出用。
+ *
+ * ⚠️ **key 用空间的 `code` 而不是 id** —— id 是本地数据（另一台机器上不同），
+ * 而导出包要能跨机器搬。导出流程里直接拿这个结果写进 manifest，中间不转换：
+ * 多一次转换就多一处可能把 id 漏进去的地方，而那种错误在导入时才显形，
+ * 症状是「导入了但坐标全丢」。
+ */
+export async function allScoresOf(entryId: string): Promise<Record<string, Record<string, number>>> {
+  const db = await getDatabase()
+  const [rows, spaces] = await Promise.all([
+    db
+      .select({ spaceId: entryTaxonomy.spaceId, dimensionKey: entryTaxonomy.dimensionKey, score: entryTaxonomy.score })
+      .from(entryTaxonomy)
+      .where(eq(entryTaxonomy.entryId, entryId)),
+    listDesignSpaces(),
+  ])
+  const codeOf = new Map(spaces.map((space) => [space.id, space.code]))
+  const result: Record<string, Record<string, number>> = {}
+  for (const row of rows) {
+    // ⚠️ 认不出的 spaceId 直接跳过。留着会造出一个「没有对应空间定义」的
+    // 坐标分组，导入端会把它当垃圾空间处理 —— 而那不如现在就不导出。
+    const code = codeOf.get(row.spaceId)
+    if (!code) continue
+    const bucket = result[code] ?? {}
+    bucket[row.dimensionKey] = row.score
+    result[code] = bucket
+  }
+  return result
+}
+
+/** 某个 entry 在指定空间下的全部坐标。详情页切空间时用它。 */
+export async function taxonomyOfSpace(entryId: string, spaceId: string): Promise<Partial<Record<string, number>>> {
+  const db = await getDatabase()
+  const rows = await db
+    .select({ dimensionKey: entryTaxonomy.dimensionKey, score: entryTaxonomy.score })
+    .from(entryTaxonomy)
+    .where(and(eq(entryTaxonomy.entryId, entryId), eq(entryTaxonomy.spaceId, spaceId)))
+  const result: Record<string, number> = {}
+  for (const row of rows) result[row.dimensionKey] = row.score
+  return result
+}
+
+export async function getEntryDetail(id: string, spaceId = 'space-mine'): Promise<EntryDetail> {
   const db = await getDatabase()
   const [row] = await db.select().from(entries).where(eq(entries.id, id)).limit(1)
   if (!row) throw new Error('条目不存在')
 
-  const [tagMap, taxonomyMap] = await Promise.all([tagsForEntries([id]), taxonomyForEntries([id])])
+  const [tagMap, taxonomyMap] = await Promise.all([tagsForEntries([id]), taxonomyForEntries([id], spaceId)])
 
   let extension: MonsterExtension | null = null
   if (row.domain === 'monster') {
@@ -197,6 +272,12 @@ export type ListFilter = {
   untagged?: boolean
   /** 搜 name 与 notes。 */
   q?: string
+  /**
+   * ⭐ 读哪个空间的坐标（2026-10-06）。默认「我的」。
+   * ⚠️ 不是「读全部」—— 那会把不同空间的同名维度混成一份，
+   * 而卡片/列表要回答的是「我评过几条轴」。
+   */
+  spaceId?: string
   limit?: number
   offset?: number
 }
@@ -290,7 +371,12 @@ export async function listEntries(filter: ListFilter = {}): Promise<EntrySummary
 
   if (rows.length === 0) return []
   const ids = rows.map((row) => row.id)
-  const [tagMap, taxonomyMap] = await Promise.all([tagsForEntries(ids), taxonomyForEntries(ids)])
+  // ⚠️ 列表只读「我的」空间的坐标。卡片上那个小圆点是「我评过几条轴」，
+  // 混进原作的分数会让「我到底评过没有」变得不可答。
+  const [tagMap, taxonomyMap] = await Promise.all([
+    tagsForEntries(ids),
+    taxonomyForEntries(ids, filter.spaceId ?? 'space-mine'),
+  ])
   return rows.map((row) => mapEntry(row, tagMap.get(row.id) ?? [], taxonomyMap.get(row.id) ?? {}))
 }
 
@@ -358,7 +444,7 @@ export async function createEntry(input: CreateEntryInput): Promise<EntrySummary
   // attachEntryTagsByName 是「只加不删」的合并语义 —— 它内部调
   // setEntryTags 时只替换 user 那一批，系统 tag 原样保留。
   await attachEntryTagsByName(id, tagNames)
-  await setTaxonomy(id, input.taxonomy ?? {})
+  await setTaxonomy(id, input.taxonomy ?? {}, input.taxonomySpaceId ?? 'space-mine')
   return getEntry(id)
 }
 
@@ -425,7 +511,7 @@ export async function updateEntry(id: string, input: UpdateEntryInput): Promise<
     })
   }
 
-  if (input.taxonomy !== undefined) await setTaxonomy(id, input.taxonomy)
+  if (input.taxonomy !== undefined) await setTaxonomy(id, input.taxonomy, input.taxonomySpaceId ?? 'space-mine')
 
   if (input.extension !== undefined && current.domain === 'monster') {
     await db
@@ -454,18 +540,23 @@ export async function updateEntry(id: string, input: UpdateEntryInput): Promise<
  */
 export async function setTaxonomy(
   id: string,
-  taxonomy: Partial<Record<TaxonomyDimensionKey, number>>,
-  ruleId = '',
+  taxonomy: Partial<Record<string, number>>,
+  spaceId = 'space-mine',
 ): Promise<void> {
-  const entry = await getEntry(id)
-  const allowed = new Set<string>(dimensionKeysOf(entry.domain))
+  await getEntry(id)
+  // ⚠️ **合法性按空间校验**，不再按 domain —— 维度定义在 `design_axes` 里，
+  // 一个空间有哪些轴与 domain 无关（「原作」空间是空的，任何 entry 都能往里写，
+  // 但不能往里写一个它没有的维度）。
+  const axes = await listDesignAxes(spaceId)
+  if (axes.length === 0) throw new Error('这个设计空间还没有维度 —— 先给它加几条轴')
+  const allowed = new Map(axes.map((axis) => [axis.key, axis]))
   const db = await getDatabase()
   const now = new Date().toISOString()
 
   const rows = Object.entries(taxonomy).filter(([key, value]) => {
-    if (!allowed.has(key)) throw new Error(`${entry.domain} 没有「${key}」这个维度`)
+    if (!allowed.has(key)) throw new Error(`这个空间没有「${key}」这个维度`)
     return typeof value === 'number' && !Number.isNaN(value)
-  })
+  }) as Array<[string, number]>
   if (rows.length === 0) return
 
   db.transaction((trx) => {
@@ -473,20 +564,26 @@ export async function setTaxonomy(
       const score = Math.min(1, Math.max(0, Math.round(value * 100) / 100))
       trx
         .insert(entryTaxonomy)
-        .values({ entryId: id, dimensionKey: key, score, setAt: now, updatedAt: now })
-        // ⚠️ onConflict 也更新 setAt：改分意味着「我对这条的判断变了」，
-        // 时间戳要跟着走。updatedAt 记的是「行被写过」，setAt 记的是
-        // 「判断成形于何时」—— 后者才是让「我改主意了」有痕迹的那个。
-        .onConflictDoUpdate({ target: [entryTaxonomy.entryId, entryTaxonomy.dimensionKey], set: { score, setAt: now, updatedAt: now } })
+        .values({ entryId: id, spaceId, dimensionKey: key, score, setAt: now, updatedAt: now })
+        // ⚠️ onConflict 的 target 必须是**新的三列主键**，否则 upsert 会按老的
+        // 二列主键去匹配 —— 结果是「原作的移动性」被当成「我的移动性」覆盖掉。
+        // 少写一个列的后果不是报错，而是数据静默丢失。
+        // setAt 也更新：改分意味着「我对这条的判断变了」，时间戳要跟着走。
+        .onConflictDoUpdate({
+          target: [entryTaxonomy.entryId, entryTaxonomy.spaceId, entryTaxonomy.dimensionKey],
+          set: { score, setAt: now, updatedAt: now },
+        })
         .run()
     }
   })
 }
 
-/** 清除某个维度 ——「这条我没打分」和「这条打了 0 分」是两件事。 */
-export async function clearTaxonomyDimension(id: string, dimensionKey: string): Promise<void> {
+/** 清除某个空间下的某个维度 ——「这条我没打分」和「这条打了 0 分」是两件事。 */
+export async function clearTaxonomyDimension(id: string, dimensionKey: string, spaceId = 'space-mine'): Promise<void> {
   const db = await getDatabase()
-  await db.delete(entryTaxonomy).where(and(eq(entryTaxonomy.entryId, id), eq(entryTaxonomy.dimensionKey, dimensionKey)))
+  await db
+    .delete(entryTaxonomy)
+    .where(and(eq(entryTaxonomy.entryId, id), eq(entryTaxonomy.dimensionKey, dimensionKey), eq(entryTaxonomy.spaceId, spaceId)))
 }
 
 /**
@@ -505,10 +602,12 @@ export async function setEntryStatus(id: string, status: EntryStatus): Promise<E
 /**
  * 换 domain —— 这是「移库」动作，不是改字段。
  *
- * ⚠️ 换 domain 意味着换扩展表和换维度集合。旧 domain 的打分里那些新 domain
- * 不认识的维度会被删掉（留着就是读取时的脏数据）。旧扩展表行删掉。
+ * ⚠️ 换 domain 意味着换扩展表。旧扩展表行删掉。
  *
- *⚠️ **不可逆。** 没做「保留两份」—— 那会让 domain 失去意义。
+ * ⚠️ **但坐标一个都不动**（2026-10-06 起）。维度归**设计空间**管，与 domain
+ * 无关 —— 「我的设计空间」里有 mobility 与 size 这条轴，跟这条记录属于怪物库
+ * 还是场景库毫无关系。以前这里要按 domain 重新过滤一遍打分，纯粹是因为那时
+ * 维度定义挂在 domain 上；那条耦合现在解开了。
  */
 export async function changeDomain(id: string, nextDomain: DomainCode): Promise<EntrySummary> {
   const target = assertDomain(nextDomain)
@@ -516,21 +615,16 @@ export async function changeDomain(id: string, nextDomain: DomainCode): Promise<
   if (current.domain === target) return getEntry(id)
 
   const db = await getDatabase()
-  const allowed = new Set<string>(dimensionKeysOf(target))
   const now = new Date().toISOString()
 
   db.transaction((trx) => {
     trx.update(entries).set({ domain: target, updatedAt: now }).where(eq(entries.id, id)).run()
     trx.delete(monsterEntries).where(eq(monsterEntries.entryId, id)).run()
-    trx.delete(entryTaxonomy).where(eq(entryTaxonomy.entryId, id)).run()
     if (target === 'monster') {
       trx.insert(monsterEntries).values({ entryId: id, attackPattern: '[]', behaviorPattern: '[]', telegraph: '[]', reactionPattern: '[]' }).run()
     }
   })
 
-  // 重新写一遍当前仍合法的打分。
-  const kept = Object.fromEntries(Object.entries(current.taxonomy).filter(([key]) => allowed.has(key)))
-  await setTaxonomy(id, kept)
   return getEntry(id)
 }
 

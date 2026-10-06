@@ -1,4 +1,4 @@
-import { primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core'
+import { integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core'
 
 /**
  * v0.2 数据模型：顶层 entries + 按 domain 分流的扩展表。
@@ -182,6 +182,17 @@ export const entryTaxonomy = sqliteTable(
     entryId: text('entryId')
       .notNull()
       .references(() => entries.id, { onDelete: 'cascade' }),
+    /**
+     * ⭐ 坐标属于哪个设计空间（2026-10-06）。
+     *
+     * 这是整张表的关键：同一个 entry 在「原作」和「我的」下**各有一组独立
+     * 坐标**，而不是同一组坐标有两种读法 —— 两种读法会让人无法判断自己在
+     * 改什么，于是不敢改（详见 designSpaces 的注释）。
+     */
+    spaceId: text('spaceId')
+      .notNull()
+      .default('')
+      .references(() => designSpaces.id, { onDelete: 'cascade' }),
     dimensionKey: text('dimensionKey').notNull(),
     score: real('score').notNull(),
     /** ⭐ 我定这个投影值的时间。不是 db 的时间戳 —— 那是「行被写过」，这个是
@@ -189,7 +200,7 @@ export const entryTaxonomy = sqliteTable(
     setAt: text('setAt').notNull().default(''),
     updatedAt: text('updatedAt').notNull(),
   },
-  (table) => [primaryKey({ columns: [table.entryId, table.dimensionKey] })],
+  (table) => [primaryKey({ columns: [table.entryId, table.spaceId, table.dimensionKey] })],
 )
 
 /**
@@ -203,4 +214,70 @@ export const importIdMap = sqliteTable('import_id_map', {
   externalId: text('externalId').primaryKey(),
   localId: text('localId').notNull(),
   importedAt: text('importedAt').notNull(),
+})
+/**
+ * ⭐⭐ 设计空间（2026-10-06）—— 坐标系的持有者。
+ *
+ * 为什么需要这张表：**同一个问题问两次，答案不一样。**
+ *
+ *   「原作的移动性」    → 对原作的**观察**  → 原作里它有多能跑
+ *   「我的移动性」      → 对原作的**解读**  → 我认为它有多能跑
+ *
+ * 两者挤在同一列（v0.2 的`entry_taxonomy`）时，半年后把0.70 改成 0.55
+ * 就**无法判断自己在改什么**：按「属性」读只能理解成记错了，于是不敢改；
+ * 按「投影」读才是「我的理解变了」。不敢改分的坐标系会慢慢被当成不可动的
+ * 客观事实，那时 Atlas 就退化成 wiki 了 —— 而它本来就不该是 wiki。
+ *
+ * 所以把空间提升成一等公民：一个 entry 在每个空间下各有一组独立坐标。
+ *
+ * ⚠️ **空间自带维度定义**（`design_axes`），不与别的空间共享。理由同上：
+ * `我的.mobility` 与 `原作.mobility` 是**两个不同的问题**，硬塞进一个共享定义
+ * 恰好把这里要分开的区别又合回去。代价是没法画双空间对比图 —— 但那本来
+ * 就不是 Atlas 的目标（目标是条目之间在空间里的相对位置）。
+ *
+ * ⚠️ **空间的维度必须是数据而不是代码常量**（这是被逼出来的，不是偏好）：
+ * 「原作」的维度取决于原作是什么游戏（蘑菇打 HP/移动速度，Boss 战打
+ * 威胁范围/技能组合），「项目」的维度每个项目都不一样。这两类不可能活在
+ * 代码里 —— 改一个项目要改代码重新部署，比开一张表贵得多。
+ */
+export const designSpaces = sqliteTable('design_spaces', {
+  id: text('id').primaryKey(),
+  /** 稳定标识（'source' / 'mine' / 'project-mr'）。代码里认它，不认 id。 */
+  code: text('code').notNull().unique(),
+  labelZh: text('labelZh').notNull(),
+  labelEn: text('labelEn').notNull().default(''),
+  /** 一句话：在这个空间里，坐标记的是什么。 */
+  hintZh: text('hintZh').notNull().default(''),
+  /**
+   * 排序用的小整数。
+   *
+   * ⚠️ 存在的理由是「原作」与「我的」有固定顺序 —— 采集时最常写的是
+   * 「我的」，而「原作」是可选的补充。用 createdAt 排序做不到「我的总在前面」。
+   */
+  sortOrder: integer('sortOrder').notNull().default(0),
+  /** 系统预置的两个（原作 / 我的）不可删。 */
+  isBuiltin: integer('isBuiltin').notNull().default(0),
+  createdAt: text('createdAt').notNull(),
+  updatedAt: text('updatedAt').notNull(),
+})
+
+/** 某空间下的维度定义。归类用 `groupKey`（展示分组，只管排版不落进坐标）。 */
+export const designAxes = sqliteTable('design_axes', {
+  id: text('id').primaryKey(),
+  spaceId: text('spaceId')
+    .notNull()
+    .references(() => designSpaces.id, { onDelete: 'cascade' }),
+  /** 空间内唯一的短key，写入侧用它定位。 */
+  key: text('key').notNull(),
+  labelZh: text('labelZh').notNull(),
+  labelEn: text('labelEn').notNull().default(''),
+  /** 一句话说明这一轴在衡量什么。 */
+  hintZh: text('hintZh').notNull().default(''),
+  /** 展示分组。只影响排版，不影响坐标语义。 */
+  groupKey: text('groupKey').notNull().default(''),
+  /** JSON 编码的完整档位数组，从低到高。 */
+  anchorsJson: text('anchorsJson').notNull().default('[]'),
+  sortOrder: integer('sortOrder').notNull().default(0),
+  createdAt: text('createdAt').notNull(),
+  updatedAt: text('updatedAt').notNull(),
 })

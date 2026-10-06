@@ -1,12 +1,12 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, ChevronRight, ImagePlus, Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { TaxonomyRow } from './taxonomy-stars'
-import { dimensionsInGroup, dimensionsOf, groupsOf, type DomainDef, type EntrySummary, type TaxonomyDimensionKey } from '@/types/atlas'
+import { type DesignAxis, type DomainDef, type EntrySummary } from '@/types/atlas'
 
 /**
  * Quick Add —— v0 最重要的一个界面。
@@ -78,7 +78,9 @@ export function QuickAdd({
    * 真正要防的「逼人填表」靠的是：填了能一键清空、界面上明说「不填也行」。
    */
   const [showTaxonomy, setShowTaxonomy] = useState(true)
-  const [taxonomy, setTaxonomy] = useState<Partial<Record<TaxonomyDimensionKey, number>>>({})
+  // ⚠️ key 是「我的设计空间」下的轴 key，不是固定枚举 —— 维度定义归数据库管之后，
+  // 每加一条轴都要能直接用，不该逼着改这里的类型。
+  const [taxonomy, setTaxonomy] = useState<Partial<Record<string, number>>>({})
   const [image, setImage] = useState<PendingImage | null>(null)
   const [sourceUrl, setSourceUrl] = useState('')
   const [name, setName] = useState('')
@@ -91,6 +93,42 @@ export function QuickAdd({
   const [dragging, setDragging] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const tagInputRef = useRef<HTMLInputElement>(null)
+
+  /**
+   * ⭐ 「我的设计空间」的坐标轴（2026-10-06）。
+   *
+   * ⚠️ **只读「我的」空间**，不读「原作」—— 采集时最常写的是它，而「原作」
+   * 是可选的补充。两者混在采集流里会让「我存这条时在回答哪个问题」变模糊，
+   * 那正是要消除的歧义。
+   *
+   * ⚠️ 维度定义现在**从数据库读**，不再从代码常量读 —— 因为坐标轴会随
+   * 空间变化（项目坐标系各有各的轴），代码常量管不住。
+   */
+  const [axes, setAxes] = useState<DesignAxis[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const response = await fetch('/api/atlas/spaces?axesOf=space-mine')
+      const body = await response.json()
+      if (!cancelled && response.ok && body.success) setAxes(body.data)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  /** 按分组归拢。⚠️ 无组的轴挂到空分组里，不被丢掉。 */
+  const axisGroups = useMemo(() => {
+    const grouped = new Map<string, DesignAxis[]>()
+    for (const axis of axes) {
+      const key = axis.group.labelZh || ''
+      const list = grouped.get(key) ?? []
+      list.push(axis)
+      grouped.set(key, list)
+    }
+    return [...grouped.entries()]
+  }, [axes])
 
   const reset = useCallback(() => {
     if (image?.previewUrl.startsWith('blob:')) URL.revokeObjectURL(image.previewUrl)
@@ -256,6 +294,9 @@ export function QuickAdd({
           status: 'inbox',
           tagNames: finalTags,
           taxonomy,
+          // ⚠️ 坐标写到「我的设计空间」—— 采集时最常写的是它。原作那组坐标
+          // 是可选补充，不该在采集流里顺手填掉。
+          taxonomySpaceId: 'space-mine',
         }),
       })
       const body = await response.json()
@@ -397,35 +438,35 @@ onDrop={(event) => void handleDrop(event)}
                因为屏幕上只剩度量区，卡片区反而看不见了。
                收起时这个容器不渲染，高度自己回去。 */
             <div className="max-h-[22rem] space-y-1 overflow-y-auto rounded-md border bg-muted/30 px-3 py-1">
-              {groupsOf(domain.code).map((group) => {
-                const dimensions = dimensionsInGroup(domain.code, group.key)
-                if (dimensions.length === 0) return null
-                return (
-                  <div key={group.key} className="py-1">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                      {group.labelZh} <span className="font-normal normal-case tracking-normal">{group.labelEn}</span>
-                      <span className="ml-1.5 font-normal normal-case tracking-normal">{group.hintZh}</span>
-                    </p>
-                    <div className="divide-y">
-                      {dimensions.map((dimension) => (
-                        <TaxonomyRow
-                          key={dimension.key}
-                          dimension={dimension}
-                          value={taxonomy[dimension.key]}
-                          onChange={(score) => setTaxonomy((current) => ({ ...current, [dimension.key]: score }))}
-                          onClear={() =>
-                            setTaxonomy((current) => {
-                              const next = { ...current }
-                              delete next[dimension.key]
-                              return next
-                            })
-                          }
-                        />
-                      ))}
-                    </div>
+              {axisGroups.map(([groupKey, groupAxes]) => (
+                <div key={groupKey || 'ungrouped'} className="py-1">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                    {groupKey || '未分组'}
+                  </p>
+                  <div className="divide-y">
+                    {groupAxes.map((axis) => (
+                      <TaxonomyRow
+                        key={axis.key}
+                        dimension={axis}
+                        value={taxonomy[axis.key]}
+                        onChange={(score) => setTaxonomy((current) => ({ ...current, [axis.key]: score }))}
+                        onClear={() =>
+                          setTaxonomy((current) => {
+                            const next = { ...current }
+                            delete next[axis.key]
+                            return next
+                          })
+                        }
+                      />
+                    ))}
                   </div>
-                )
-              })}
+                </div>
+              ))}
+              {axisGroups.length === 0 && (
+                <p className="py-2 text-center text-[11px] text-muted-foreground">
+                  「我的设计空间」还没有坐标轴 —— 先去库里加几条，或者跳过这里，事后在详情里补。
+                </p>
+              )}
             </div>
           )}
         </div>

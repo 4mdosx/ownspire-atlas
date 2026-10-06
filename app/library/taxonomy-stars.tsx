@@ -11,7 +11,6 @@ import {
   starsToScore,
   TAXONOMY_FINE_STEP,
   TAXONOMY_STARS,
-  type TaxonomyDimensionDef,
 } from '@/types/atlas'
 
 /**
@@ -31,6 +30,22 @@ import {
  * 和「我觉得它是 0 分」是两件事 —— 前者不该被后者污染。这也是
  * entry_taxonomy 要做 sparse 表的原因。
  */
+/**
+ * ⭐ 一条坐标轴的最小形状。
+ *
+ * ⚠️ 刻意只声明用到的字段，而不是 `TaxonomyDimensionDef` 或 `DesignAxis`：
+ * 坐标轴现在有两种来源（代码里的种子定义、数据库里的 design_axes），
+ * 而这两个组件只关心「名字 + 档位 + 提示」。写死具体类型会逼着渲染层
+ * 为两种来源各写一个组件，而它们唯一的区别只有取数路径。
+ */
+export type AxisLike = {
+  key: string
+  labelZh: string
+  labelEn: string
+  hintZh: string
+  anchors: readonly string[]
+}
+
 export function TaxonomyStars({
   dimension,
   value,
@@ -39,7 +54,7 @@ export function TaxonomyStars({
   /** 显示档位词快选行。Quick Add 与 Detail 都开着。 */
   showAnchors = true,
 }: {
-  dimension: TaxonomyDimensionDef
+  dimension: AxisLike
   /** undefined = 没打过分。 */
   value?: number
   onChange: (score: number) => void
@@ -168,7 +183,7 @@ export function TaxonomyRow({
   onClear,
   showAnchors = true,
 }: {
-  dimension: TaxonomyDimensionDef
+  dimension: AxisLike
   value?: number
   onChange: (score: number) => void
   onClear: () => void
