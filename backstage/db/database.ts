@@ -60,6 +60,9 @@ function ensureSchema(): void {
       imagePath TEXT NOT NULL DEFAULT '',
       imageSource TEXT NOT NULL DEFAULT 'file',
       originalName TEXT NOT NULL DEFAULT '',
+      observed TEXT NOT NULL DEFAULT '',
+      read TEXT NOT NULL DEFAULT '',
+      worthwhileBecause TEXT NOT NULL DEFAULT '',
       notes TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'inbox',
       createdAt TEXT NOT NULL,
@@ -69,6 +72,7 @@ function ensureSchema(): void {
     CREATE TABLE IF NOT EXISTS tags (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
+      groupName TEXT NOT NULL DEFAULT '',
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL
     );
@@ -96,6 +100,7 @@ function ensureSchema(): void {
       entryId TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
       dimensionKey TEXT NOT NULL,
       score REAL NOT NULL,
+      setAt TEXT NOT NULL DEFAULT '',
       updatedAt TEXT NOT NULL,
       PRIMARY KEY (entryId, dimensionKey)
     );
@@ -113,8 +118,60 @@ function ensureSchema(): void {
     CREATE INDEX IF NOT EXISTS entries_domain_idx ON entries(domain, createdAt);
     CREATE INDEX IF NOT EXISTS entry_taxonomy_dim_idx ON entry_taxonomy(dimensionKey, score);
   `)
+  addMissingColumns()
   migrateLegacyMonsterEntries()
   schemaVersionApplied = SCHEMA_VERSION
+}
+
+/**
+ * 给已存在的表补列。
+ *
+ * ⚠️ 为什么需要这一步：`CREATE TABLE IF NOT EXISTS` 对**已存在**的表是
+ * 完全的 no-op —— 加了新的列定义，老库也不会长出那一列。而这个项目的
+ * 迁移窗口是「库是空的」（见 migrateLegacyMonsterEntries 的注释），所以
+ * 正常路径下老库不该存在；可一旦有人手工加过列、或从旧版本带着库升级，
+ * 就会撞上「schema 声明了但表里没有」的情况，而症状是难懂的
+ * `no such column: observed` —— 报错完全指不到「你的库比代码旧」这件事。
+ *
+ * 所以显式补列。**只加列，不改类型、不删列、不搬数据**：
+ * 改类型和搬数据都属于「可能丢信息」，那种宁可停下来问。
+ *
+ * SQLite 的 `ALTER TABLE ADD COLUMN` 要求新列有默认值或可空，
+ * 这里所有列都给了 DEFAULT ''，所以能直接加。
+ */
+const COLUMNS_TO_ADD: ReadonlyArray<{ table: string; column: string; ddl: string }> = [
+  { table: 'entries', column: 'observed', ddl: "ALTER TABLE entries ADD COLUMN observed TEXT NOT NULL DEFAULT ''" },
+  { table: 'entries', column: 'read', ddl: "ALTER TABLE entries ADD COLUMN read TEXT NOT NULL DEFAULT ''" },
+  {
+    table: 'entries',
+    column: 'worthwhileBecause',
+    ddl: "ALTER TABLE entries ADD COLUMN worthwhileBecause TEXT NOT NULL DEFAULT ''",
+  },
+  { table: 'tags', column: 'groupName', ddl: "ALTER TABLE tags ADD COLUMN groupName TEXT NOT NULL DEFAULT ''" },
+  {
+    table: 'entry_taxonomy',
+    column: 'setAt',
+    ddl: "ALTER TABLE entry_taxonomy ADD COLUMN setAt TEXT NOT NULL DEFAULT ''",
+  },
+]
+
+function addMissingColumns(): void {
+  for (const { table, column, ddl } of COLUMNS_TO_ADD) {
+    const existing = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+    // 表本身可能还不存在（全新库）—— 那时 CREATE TABLE 已经带上了新列。
+    if (existing.length === 0) continue
+    if (existing.some((item) => item.name === column)) continue
+    sqlite.exec(ddl)
+  }
+
+  // entries.notes 是已废弃的别名。新库不写它，但老库里已有内容 ——
+  // **保守地搬进 observed**：不猜用户哪些是判断，猜错比不猜贵。
+  // 要挪的话用户在界面上自己动手。
+  const columns = sqlite.prepare('PRAGMA table_info(entries)').all() as Array<{ name: string }>
+  if (!columns.some((item) => item.name === 'notes')) return
+  sqlite.exec(
+    `UPDATE entries SET observed = notes WHERE observed = '' AND notes != ''`,
+  )
 }
 
 /**

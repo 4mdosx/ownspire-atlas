@@ -16,22 +16,26 @@ import type { DomainCode, EntryTag, MonsterExtension, TaxonomyDimensionKey } fro
  *   media/<relative>   ← 图片本体
  * ```
  *
- * ⚠️ **formatVersion 2**（v0.1 是 1）。改动：
- * · `collection: 'monster'` 换成每条自带 `domain`
- * · 新增 `taxonomy`（0–1 连续分）
- * · 新增 `extension`（domain 专属结构化字段）
- * · tag 从 `string[]` 变成 `{name, origin, ruleId}` —— origin 是关联的属性，
- *   导成裸名字就丢了「这个 tag 是系统打还是手动加」
- * · `imagePath` 允许为空
+ * ⚠️ **formatVersion 3**（v0.1 是 1，v0.2 是 2）。相对 2 的改动：
+ * · `notes` 拆成 `observed`（我看到了什么）+ `read`（我认为它为什么成立）
+ * · 新增 `worthwhileBecause`（我为什么留着它）
+ * · tag 带上 `group`（命名空间）
  *
- * v0.1 的包不兼容 —— 导入端会明确报错而不是猜。
+ * ⚠️ **这是破坏性变更，所以升版本号而不是悄悄加字段。**
+ * v0.2 建立的纪律在这里兑现：v2 的包里 `notes` 装着观察与判断的混合，
+ * 导入到 v3 无法自动拆分（猜错比不猜贵）。所以 v2 的包**不兼容**，
+ * 导入端明确报错—— 至少不会让人以为数据完整地过来了。
+ *
+ * v1 与 v2 的包同样不兼容，错误信息各不相同。
  */
-export const EXPORT_FORMAT_VERSION = 2
+export const EXPORT_FORMAT_VERSION = 3
 
 export type ExportTag = {
   name: string
   origin: string
   ruleId: string
+  /** 命名空间（formatVersion 3 起）。空串 = 还没归类。 */
+  group: string
 }
 
 export type ExportEntry = {
@@ -44,6 +48,20 @@ export type ExportEntry = {
   imagePath: string
   imageSource: string
   originalName: string
+  /**
+   * ⭐ 观察 —— 我看到了什么（客观）。
+   *
+   * ⚠️ `notes` 保留在导出格式里，但**只作为读入端的兼容字段**：
+   * formatVersion 3 的包里不再有它，v3导入器会把它读进 observed；
+   * 导出 v3 时它恒为空。理由见docs/00-scope.md ——
+   * 「观察」和「判断」混在一个字段里，半年后无法分辨哪句是原作事实。
+   */
+  observed: string
+  /** ⭐ 判断 —— 我认为它为什么成立（主观）。 */
+  read: string
+  /** ⭐ 我为什么留着它。 */
+  worthwhileBecause: string
+  /** @deprecated 读入端兼容用；v3 导出恒为空串。 */
   notes: string
   status: string
   createdAt: string
@@ -112,5 +130,5 @@ export function exportStamp(date = new Date()): string {
 
 /** EntryTag（service 层形态）→ ExportTag（落盘形态）。 */
 export function toExportTag(tag: EntryTag): ExportTag {
-  return { name: tag.name, origin: tag.origin, ruleId: tag.ruleId }
+  return { name: tag.name, origin: tag.origin, ruleId: tag.ruleId, group: tag.group }
 }

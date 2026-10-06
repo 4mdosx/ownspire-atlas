@@ -36,6 +36,39 @@ export const entries = sqliteTable('entries', {
   imageSource: text('imageSource').notNull().default('file'),
   originalName: text('originalName').notNull().default(''),
 
+  /**
+   * ⭐ 观察与判断分列（2026-10-06）。
+   *
+   * · `observed` —— **我看到了什么**。客观。「攻击前身体膨胀 0.5 秒」在这。
+   * · `read`    —— **我认为它为什么成立**。主观。「用silhouette 变化给玩家
+   *               telegraph」在这。
+   *
+   * ⚠️ 分开是这套系统的地基，不是洁癖。混在一个字段里，半年后回头看就
+   * 分不清哪句是原作的事实、哪句是我加的解读 —— 而**混在一起的判断等于
+   * 没有判断**：不敢改，因为改了对= 承认之前在编。
+   *
+   * ⚠️ `notes` 保留为 deprecated 别名，读写都映射到 observed。已有的
+   * entries 里的 notes 内容**保守地全算 observed** —— 不猜用户哪些是判断，
+   * 猜错比不猜贵。要挪的话由用户在界面上自己动手。
+   */
+  observed: text('observed').notNull().default(''),
+  read: text('read').notNull().default(''),
+
+  /**
+   * ⭐ 我为什么留着它（2026-10-06）。
+   *
+   * 「非常简单地用蓄力→冲刺建立了一种高 commitment / 高 readability 的攻击」
+   * —— 这句话才是 Creative Atlas 区别于收藏夹与 wiki 的地方：前两者存
+   * 「这是什么」，这里存「**这值得我留着的理由是什么**」。
+   *
+   * 半年后回看，这一句比整条记录里的其他内容都更值钱：它能回答「当初为什么
+   * 觉得它有意思」，而 tag 只能回答「它属于哪些类」。
+   *
+   * 可空 —— 采集时不必每条都写。但**界面上它必须在最显眼的位置**。
+   */
+  worthwhileBecause: text('worthwhileBecause').notNull().default(''),
+
+  /** @deprecated 已并入 observed。保留是为了让旧行还能读，见上方说明。 */
   notes: text('notes').notNull().default(''),
 
   status: text('status').notNull().default('inbox'),
@@ -75,10 +108,24 @@ export const monsterEntries = sqliteTable('monster_entries', {
  * origin（用户输入 vs 系统自动添加）必须挂在 entry_tags 上：tag 表里 `cute`
  * 只有一行，但可能你手动加过、系统也自动加过。origin 挂在 tag 上，
  * 这一行的归属就歧义了。
+ *
+ * ⭐ `groupName` 是命名空间（2026-10-06）：primitive / visual / concept /
+ * role / context / taxonomy。
+ *
+ * ⚠️ **为什么现在就需要它**：半年后 800 个 tag 混在一起，就只能靠一个个
+ * 划标签做 Faceted Search，而那时再补命名空间要手工回填几百行 —— 而
+ * **回填时你已经不记得当初为什么给某个 tag 选了哪个组**。趁现在只有几十个
+ * tag、还都记得住的时候定下来，成本是零。
+ *
+ * ⚠️ **显示名不带前缀**。内部存 `jumper` + group=`primitive`，界面显示
+ * 「Jumper」。前缀只是内部知识，不该漏给用户看 —— 否则每个 tag 都变成
+ * 「primitive:Jumper」这种噪音。
  */
 export const tags = sqliteTable('tags', {
   id: text('id').primaryKey(),
   name: text('name').notNull().unique(),
+  /** 命名空间。空字符串 = 还没归类，不阻塞使用 —— 强制归类会让随手加 tag 变成负担。 */
+  groupName: text('groupName').notNull().default(''),
   createdAt: text('createdAt').notNull(),
   updatedAt: text('updatedAt').notNull(),
 })
@@ -107,7 +154,7 @@ export const entryTags = sqliteTable(
 )
 
 /**
- * taxonomy 打分。
+ * taxonomy 打分 —— **我对这条设计做的投影**，不是它的客观属性。
  *
  * ⚠️ 维度定义（维度列表、中英文、顺序、极值）**在代码常量里**，不在数据库。
  * 这是「字段要从数据里长出来」的纪律在框架层的应用：现在只有一个 domain，
@@ -116,6 +163,18 @@ export const entryTags = sqliteTable(
  * ⚠️ 存 0–1 连续分，**不存星数**。星级是显示编码：`star = round(score × 5)`。
  * 界面是 1–5 星（5 档离散）而数据是 0.01 精度（101 档），这个矛盾靠
  * 「点击 0.2 步进 / 方向键 0.01 步进」化解，映射规则写死在 types/atlas.ts。
+ *
+ * ⭐⭐ **score 记的是「我把它放在哪」，不是「它客观有多强」**（2026-10-06）。
+ *
+ * 这是整个 Atlas 的立身之本：Creative Atlas 不做 Wiki。如果 score 是客观属性，
+ * 半年后把0.70 改成 0.55 就只能理解成「之前记错了」；而它实际上是「我对
+ * 怪物设计的理解变了」—— **不是数据错误，是判断变了**。这两者必须能区分，
+ * 否则人就会不敢改分（改了对=承认之前错），于是坐标轴慢慢被当成不可动��
+ * 客观事实，Atlas 就退化成考据库。
+ *
+ * 落实方式：维度本身的语义是「在我这套设计语言里」—— 界面文案与
+ * hintZh 都要按这个写；`setAt` 记下这个判断是什么时候做的，让「我改主意了」
+ * 有痕迹可循，而不是一次覆盖、没有历史。
  */
 export const entryTaxonomy = sqliteTable(
   'entry_taxonomy',
@@ -125,6 +184,9 @@ export const entryTaxonomy = sqliteTable(
       .references(() => entries.id, { onDelete: 'cascade' }),
     dimensionKey: text('dimensionKey').notNull(),
     score: real('score').notNull(),
+    /** ⭐ 我定这个投影值的时间。不是 db 的时间戳 —— 那是「行被写过」，这个是
+     *  「我的判断成形于何时」。改分时会更新它，于是「我改主意了」有痕迹。 */
+    setAt: text('setAt').notNull().default(''),
     updatedAt: text('updatedAt').notNull(),
   },
   (table) => [primaryKey({ columns: [table.entryId, table.dimensionKey] })],

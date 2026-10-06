@@ -252,19 +252,121 @@ entry_tags:  PK(entryId, tagId)
 
 ### 维度列表（monster）
 
-| code | 中文 | English |
-|---|---|---|
-| `form` | 形态 | Form |
-| `scale` | 体量 | Scale |
-| `movement` | 移动 | Movement |
-| `combat` | 战斗方式 | Combat |
-| `role` | 定位 | Role |
+⚠️ **两级结构：`domain → group → dimension`**（2026-10-06）。group 只管展示，
+不落库、不进 `entry_taxonomy` —— 那是 key 的扁平结构该背的债。
 
-旧的离散枚举值（humanoid / tiny / melee…）**不再是数据里的枚举**，只是给打分时的语义参照 —— 5星在这五个维度上大致对应「非常 humanoid」。
+```
+形态 Form          它是什么东西、多大
+  ├ form      形态型  blob · humanoid · beast · insect · construct
+  └ scale     体量    tiny · small · medium · large · huge
+
+战斗 Combat        它怎么动、怎么打、干什么
+  ├ movement  移动    static · ground · jumping · flying · teleport
+  ├ combat    战斗方式 melee · ranged · charger · zoner · summoner
+  └ role      定位    fodder · pressure · disruptor · tank · elite · boss
+```
+
+⚠️ **anchors 是完整档位，不是示例词。** 给 3 个示例，用户只敢在那 3 个词里选 ——
+每条轴要能看到自己的全部档位才好打分。所以 `form` 5 档、`role` 6 档。
+
+⚠️ **渲染是按 group 遍历维度的**，所以每个维度都必须声明 group，漏声明就是
+静默丢失。`npm run verify` 里有这条断言。
+
+⭐ **档位 → score 的映射是 `(index+1)/(n+1)`**（`anchorToScore`）：点「huge」
+落在该轴的第五档，永不触底也永不顶格。那个 `+1` 不能省 —— 省了的话最高档
+就是 1.0，0.8 以上的精度界面上再也走不到。
+
+### ⭐⭐ 坐标是「我对它的投影」，不是它的属性（2026-10-06 裁定）
+
+这是整个 Atlas 的立身之本，**不是文案调整，是语义纠正**。
+
+```
+External Work → Observation → My Read → Design Space → Compare → Create
+      外部作品       我看到什么      我认为成立     我把它放在哪
+```
+
+`entry_taxonomy.score` 记的是**「在我的设计语言里，我把它理解为 0.7」**，
+不是「原作里它是 0.7」。原作的实际碰撞宽度、移动速度、HP 属于数据考据，
+**对 Atlas 的核心几乎没有意义** —— 那些是 Source Note，不是坐标。
+
+差别的实际后果很具体：
+
+| 读法 | 半年后把 0.70 改成 0.55 会怎样 |
+|---|---|
+| 「它的属性」 | 只能理解成「之前记错了」→ 于是**不敢改分**，改了对= 承认之前错 |
+| 「我的投影」 | 是「我对怪物设计的理解变了」→ 不是错误，是成长 |
+
+后一种读法才敢改坐标。**不敢改分的坐标系会慢慢被当成不可动的客观事实，
+那时 Atlas 就退化成 wiki 了** —— 而它本来就不该是 wiki。
+
+三条落实方式：
+
+1. 那一节的标题是「**我的设计空间**」，副标「不是我设计它多强，是我认为它在哪」。
+2. `entry_taxonomy.setAt` 记**判断成形的时间**（不是行被写的时间）—— 改分时
+   更新，于是「我改主意了」有痕迹可循。
+3. 采集区与搜索的措辞统一说「给它定个位」，不说「度量」。
+
+### ⭐ 观察与判断必须分开（2026-10-06）
+
+| 字段 | 是什么 | 例 |
+|---|---|---|
+| `observed` | **我看到了什么**（客观） | 「攻击前身体膨胀约 0.5 秒」 |
+| `read` | **我认为它为什么成立**（主观） | 「用 silhouette 变化给玩家 telegraph」 |
+| `worthwhileBecause` | **我为什么留着它** | 「极简蓄力建立高 commitment / 高 readability」 |
+
+⚠️ **分开是地基，不是洁癖。** 混在一个 `notes` 里，半年后无法分辨哪句是原作
+事实、哪句是我的解读 —— 而**混在一起的判断等于没有判断**：不敢改，因为
+改了对= 承认之前在编。
+
+⚠️ `worthwhileBecause` 可空（不必每条都写），但**界面上必须在最显眼的位置**
+（drawer 里排在观察与判断之前）。它是每条记录半年后最值钱的一句：tag 只能回答
+「它属于哪些类」，这一句回答「当初为什么觉得有意思」。
+
+⚠️ 旧 `notes` 列**保留不删**，但v3 起读写一律走 `observed`。迁移时**保守地全搬
+进 observed** —— 不猜用户哪些是判断，猜错比不猜贵。
+
+### ⭐ tag 的命名空间（2026-10-06）
+
+`tags.groupName` ∈ `primitive | visual | concept | role | context | taxonomy`，
+空串 = 未归类。
+
+⚠️ **为什么现在就需要**：半年后 800 个 tag 混在一起，就只能一个个划来做分面
+筛选，而那时再补命名空间要手工回填几百行 —— **且回填时已经不记得当初为什么
+给某个 tag 选了哪个组**。趁现在只有几十个 tag、还都记得住的时候定下来，成本是零。
+
+⚠️ **显示名不带前缀。** 内部存 `jumper` + `group=primitive`，界面显示「Jumper」。
+前缀只是内部知识，漏给用户看只会变成噪音。
+
+⚠️ **归类不强制**，空串是一等状态。随手记的频次远高于归类的需要，让随手记
+变成一道手续是本末倒置。侧栏把「未归类」排最后但**不折叠** —— 藏起来等于
+惩罚随手记。
+
+⚠️ **group 挂在 tag 实体上，不挂 `entry_tags`** —— 与 origin 正好相反：归类是
+「这个词属于哪类」，是词的性质，与挂在哪些条目上无关；而 origin 记的是「这条
+关联是谁加的」，同一个词在不同条目上可以有不同 origin。
+
+**Primitive Dictionary 不需要单独的表**：primitive 就是 `group=primitive` 的 tag，
+它自然长出来。
 
 ### `#cheap-to-animate` 这类生产性标签最有价值
 
-Atlas 的终局不是百科全书，是**为生产原创素材提供参考**。「这只便宜好做」比「这是一只飞行虫类」更能指导下一步 —— 这类判断写在 **tag** 里（`cheap-to-animate`），不是 **taxonomy** 里（taxonomy 是「这条有多便宜好做」的可比较刻度）。两者互补，不是同一件事。
+Atlas 的终局不是百科全书，是**为生产原创素材提供参考**。「这只便宜好做」比「这是一只飞行虫类」更能指导下一步 —— 这类判断写在 **tag** 里（`cheap-to-animate`，`group=primitive`），不是 **taxonomy** 里（taxonomy 是可比较的刻度）。两者互补，不是同一件事。
+
+### ⭐ 三处**刻意不做**的扩展口（2026-10-06）
+
+外部曾对 Atlas 提出过一份完整的七层设计建议（Reference / Observation /
+Principle / Coordinates / Primitives / Translation / Evidence）。方向大多对，
+但下面这些**现在刻意不做** —— 记在这里是为了让「没做」看起来像决定而不是遗漏。
+
+| 想做的 | 为什么现在不做 | 触发条件 |
+|---|---|---|
+| **多类型 Evidence**（视频 / GIF / sprite sheet / 时间戳） | 单加一个 `mediaType` 列是**假扩展**：真正的需求是「一条记录挂多个媒体」，那是结构变化。而单加一列既支持不了视频，又制造了「已经支持多类型」的错觉。真要视频时**加表不换列**（`entry_media` 增量迁移，`imagePath` 导出格式不变） | 真的遇到静态图表达不了的信息（攻击前摇、移动节奏、群体行为、死亡反馈） |
+| **Relation 表**（similar_to / contrasts_with / variation_of / inspired_by） | **库里有 1 条记录，关系表一条数据都存不下。** 关系的价值来自横向比较，而比较至少要 20 条才成立 | 20 条之后，且真的开始问「为什么它俩像」 |
+| **Translation 对象**（借用了什么原则 / 舍弃了什么 / 目标坐标 / 项目语言） | Translation 是**项目侧**的东西，而 Atlas 现在是 Reference 库。且它由采集过程中的偶发事件触发（「某个参考真的启发了我」），不该由计划表安排 | 真的有某个参考导致了具体的设计动作 |
+
+⚠️ 这三条的共同判据：**它们都需要 20 条以上真实数据才能定义形状。**
+在 1 条数据上设计它们，就是同一份建议里自己批评的「花两天设计完美 Schema，
+然后发现 70% 的字段根本不想填」。
 
 ---
 

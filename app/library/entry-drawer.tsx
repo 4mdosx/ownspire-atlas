@@ -5,7 +5,7 @@ import { ExternalLink, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input, Textarea } from '@/components/ui/input'
 import { TaxonomyRow } from './taxonomy-stars'
-import { dimensionsInGroup, dimensionsOf, domainOf, groupsOf, STATUS_LABEL, type DomainCode, type EntryDetail, type EntryStatus, type TaxonomyDimensionKey } from '@/types/atlas'
+import { dimensionsInGroup, dimensionsOf, domainOf, groupsOf, STATUS_LABEL, TAG_GROUP_HINT, TAG_GROUP_KEYS, TAG_GROUP_LABEL, type DomainCode, type EntryDetail, type EntryStatus, type TaxonomyDimensionKey } from '@/types/atlas'
 
 /**
  * Detail 抽屉 —— 点卡片后从右侧滑出。
@@ -22,6 +22,8 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
 }) {
   const [draft, setDraft] = useState<EntryDetail>(entry)
   const [tagDraft, setTagDraft] = useState('')
+  /** 正在打开归类选择器的 tag id。null = 没打开。 */
+  const [grouping, setGrouping] = useState<string | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => setDraft(entry), [entry.id, entry.updatedAt])
@@ -56,6 +58,33 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
     const merged = [...new Set([...existing, ...incoming])]
     setTagDraft('')
     await patch({ tagNames: merged })
+  }
+
+  /**
+   * 改 tag 的归类。
+   *
+   * ⚠️ 归类挂在 **tag 实体**上，不是这条关联上 —— 所以改一次全局生效，
+   * 同名 tag 在别的条目上也会跟着变组。这是对的：「jumper 属于行为原型」
+   * 是这个词的性质，不是「这条记录里 jumper 的性质」。
+   *
+   * 所以**不用走 /api/atlas/entries/:id**（那是改这条记录的），
+   * 直接打tags 端点，然后本地同步 —— 别的条目下次刷新时自然带上新组。
+   */
+  const regroup = async (tagId: string, group: string) => {
+    const tag = draft.tags.find((item) => item.id === tagId)
+    if (!tag) return
+    const response = await fetch('/api/atlas/tags', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: tag.name, group }),
+    })
+    const body = await response.json()
+    if (!response.ok || !body.success) {
+      setGrouping(null)
+      return setError(body.error || '改归类失败')
+    }
+    setDraft({ ...draft, tags: draft.tags.map((item) => (item.id === tagId ? { ...item, group: body.data.group } : item)) })
+    setGrouping(null)
   }
 
   const setStatus = async (status: EntryStatus) => {
@@ -139,11 +168,28 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
               一眼可见，不是为了好看。 */}
           {dimensions.length > 0 && (
             <section>
-              <h3 className="mb-0.5 text-xs font-semibold text-muted-foreground">
-                度量 · Taxonomy <span className="font-normal">点档位词直接定档，星星做微调；不填也行</span>
+              {/*
+                ⭐⭐ 标题从「度量」改成「我的设计空间」—— 这不是文案调整，
+                是语义纠正（2026-10-06）。
+
+                原来的读法是「这个怪有多大的体量」，那是在记录**它的属性**——
+                照搬原游戏的坐标系，做出来就是 wiki。而这里记的是
+                **「在我的设计语言里，我把它放在哪」**：Reference 是输入，
+                坐标是我的解读。
+
+                差别的实际后果：半年后把 0.70 改成 0.55，若按「属性」读就只能
+                理解成「之前记错了」；按「我的判断」读，它是「我对怪物设计的
+                理解变了」—— 不是错误，是成长。后一种读法才敢改分。
+              */}
+              <h3 className="mb-0.5 text-xs font-semibold">
+                我的设计空间
+                <span className="ml-1.5 font-normal text-muted-foreground">
+                  不是我设计它多强，是我认为它在哪
+                </span>
               </h3>
               <p className="mb-1 text-[10px] text-muted-foreground">
-                全灰 = 没评过（不等于 0 分）。数字框可以填到 0.01。
+                点档位词直接定档，星星微调。全灰 = 还没想好（不等于 0 分），数字框可填到 0.01。
+                <span className="ml-1">改分随时可以 —— 那是判断变了，不是记错了。</span>
               </p>
               {groupsOf(draft.domain).map((group) => {
                 const groupDimensions = dimensionsInGroup(draft.domain, group.key)
@@ -182,12 +228,28 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
 
           <section>
             <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">
-              标签{userTags.length > 0 && <span className="font-normal"> · 自由输入</span>}
+              标签
+              <span className="ml-1.5 font-normal">
+                {userTags.length > 0 ? '点名字能改归类' : '自由输入，归类可跳过'}
+              </span>
             </h3>
             <div className="flex flex-wrap items-center gap-1">
               {userTags.map((tag) => (
                 <span key={tag.id} className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-[11px]">
-                  {tag.name}
+                  {/*
+                    ⭐ 点名字 → 打开归类选择。
+                    ⚠️ 加了 group 字段却没有改它的入口，等于只做了一半 ——
+                    那时归类只能用代码改，而半年后没人记得哪个词属于哪组，
+                    分组筛选就成了摆设。
+                  */}
+                  <button
+                    type="button"
+                    onClick={() => setGrouping(tag.id)}
+                    title={tag.group ? `${TAG_GROUP_LABEL[tag.group]} · 点一下改归类` : '还没归类 · 点一下归类'}
+                    className="hover:text-foreground"
+                  >
+                    {tag.name}
+                  </button>
                   <button
                     type="button"
                     title="摘掉这个标签"
@@ -210,6 +272,37 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
                 </span>
               ))}
             </div>
+
+            {/* 归类选择：分组下拉。用原生 select 而不是自建菜单 —— 选项只有 7 个，
+                自建菜单要处理键盘导航与焦点管理，成本远大于收益。 */}
+            {grouping && (
+              <div className="mt-2 flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
+                <span className="text-[11px] text-muted-foreground">
+                  {draft.tags.find((tag) => tag.id === grouping)?.name} 属于：
+                </span>
+                <select
+                  autoFocus
+                  aria-label="tag 归类"
+                  value={draft.tags.find((tag) => tag.id === grouping)?.group ?? ''}
+                  onChange={(event) => void regroup(grouping, event.target.value)}
+                  onBlur={() => setGrouping(null)}
+                  className="h-6 rounded border bg-background px-1 text-[11px] outline-none"
+                >
+                  {/* ⚠️ 空串选项 = 取消归类。必须留着 —— 归类是可选的，
+                      误归类之后要能退回去。 */}
+                  <option value="">未归类</option>
+                  {TAG_GROUP_KEYS.map((key) => (
+                    <option key={key} value={key}>
+                      {TAG_GROUP_LABEL[key]}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-[10px] text-muted-foreground">
+                  {/* ⚠️ 空串（未归类）没有 HINT 条目 —— 直接索引会拿到 undefined。 */}
+                  {TAG_GROUP_HINT[draft.tags.find((tag) => tag.id === grouping)?.group || 'taxonomy']}
+                </span>
+              </div>
+            )}
             {/* ⚠️ 系统 tag 单独一块，不可摘 —— 它们是系统按规则挂的，
                 用户摘掉等于把「这条属于哪个项目」的标记抹了。要改走 ruleId。 */}
             {systemTags.length > 0 && (
@@ -271,15 +364,62 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
             </section>
           )}
 
-          <section>
-            <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">笔记</h3>
+          {/*
+            ⭐⭐「我为什么留着它」放在观察与判断**之前**，而且样式更重。
+            这一句才是 Creative Atlas 区别于收藏夹与 wiki 的地方：前两者存
+            「这是什么」，这里存「这值得我留着的理由是什么」。
+
+            位置是刻意的：它是每条记录半年后最值钱的一句，应该在滚动时
+            第一个撞进眼睛，而不是排在最后当补充说明。
+          */}
+          <section className="rounded-md border-2 border-foreground/15 bg-accent/30 p-3">
+            <h3 className="mb-1 text-xs font-semibold">
+              我为什么留着它
+              <span className="ml-1.5 font-normal text-muted-foreground">半年后回看，这句最值钱</span>
+            </h3>
             <Textarea
-              aria-label="笔记"
-              rows={6}
-              placeholder="想到什么就写什么"
-              value={draft.notes}
-              onChange={(event) => setDraft({ ...draft, notes: event.target.value })}
-              onBlur={() => draft.notes !== entry.notes && void patch({ notes: draft.notes })}
+              aria-label="值得存的原因"
+              rows={3}
+              placeholder="它身上有什么东西值得我停下来看？&#10;「非常简单地用蓄力→冲刺建立了一种高 commitment / 高 readability 的攻击」"
+              value={draft.worthwhileBecause}
+              onChange={(event) => setDraft({ ...draft, worthwhileBecause: event.target.value })}
+              onBlur={() => draft.worthwhileBecause !== entry.worthwhileBecause && void patch({ worthwhileBecause: draft.worthwhileBecause })}
+              className="text-xs"
+            />
+          </section>
+
+          {/*
+            ⭐ 观察与判断严格分区（2026-10-06）。
+            分开不是洁癖：混在一个字段里，半年后无法分辨哪句是原作事实、
+            哪句是我的解读 —— 而混在一起的判断等于没有判断（不敢改，
+            因为改了对= 承认之前在编）。
+          */}
+          <section>
+            <h3 className="mb-1 text-xs font-semibold text-muted-foreground">
+              观察 <span className="font-normal">· 我看到了什么（客观）</span>
+            </h3>
+            <Textarea
+              aria-label="观察"
+              rows={5}
+              placeholder="攻击前身体膨胀约 0.5 秒&#10;轮廓是圆形菌盖，占据大部分视觉&#10;移动方式是周期性跳跃"
+              value={draft.observed}
+              onChange={(event) => setDraft({ ...draft, observed: event.target.value })}
+              onBlur={() => draft.observed !== entry.observed && void patch({ observed: draft.observed })}
+              className="text-xs"
+            />
+          </section>
+
+          <section>
+            <h3 className="mb-1 text-xs font-semibold text-muted-foreground">
+              判断 <span className="font-normal">· 我认为它为什么成立（主观）</span>
+            </h3>
+            <Textarea
+              aria-label="判断"
+              rows={4}
+              placeholder="用 silhouette 变化给玩家 telegraph&#10;移动方式本身就是角色性格"
+              value={draft.read}
+              onChange={(event) => setDraft({ ...draft, read: event.target.value })}
+              onBlur={() => draft.read !== entry.read && void patch({ read: draft.read })}
               className="text-xs"
             />
           </section>

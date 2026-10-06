@@ -3,8 +3,8 @@ import path from 'node:path'
 import { resolveMediaPath } from '@/backstage/db/database'
 import { createEntry, entriesOrderedById, rememberImportedId, resolveImportedId } from './entry.service'
 import { attachSystemTag, findOrCreateTag, setEntryTags, tagsForEntries } from './tag.service'
-import { exportStamp, toExportTag, writeExport, type ExportEntry, type ExportManifest } from './export.service'
-import { dimensionKeysOf, ENTRY_STATUSES, isDomainCode, type DomainCode, type EntryStatus, type TaxonomyDimensionKey } from '@/types/atlas'
+import { exportStamp, EXPORT_FORMAT_VERSION, toExportTag, writeExport, type ExportEntry, type ExportManifest } from './export.service'
+import { dimensionKeysOf, ENTRY_STATUSES, isDomainCode, isTagGroupKey, type DomainCode, type EntryStatus, type TagGroup, type TaxonomyDimensionKey } from '@/types/atlas'
 
 function toExportEntry(entry: Awaited<ReturnType<typeof entriesOrderedById>>[number]): ExportEntry {
   return {
@@ -17,7 +17,11 @@ function toExportEntry(entry: Awaited<ReturnType<typeof entriesOrderedById>>[num
     imagePath: entry.imagePath,
     imageSource: entry.imageSource,
     originalName: entry.originalName,
-    notes: entry.notes,
+    // ⚠️ notes 恒为空 —— v3 里它已经被 observed / read 取代。见export.service.ts。
+    observed: entry.observed,
+    read: entry.read,
+    worthwhileBecause: entry.worthwhileBecause,
+    notes: '',
     status: entry.status,
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt,
@@ -57,11 +61,17 @@ export async function importFrom(root: string) {
   } catch {
     throw new Error('这个目录里没有可读的 manifest.json')
   }
-  if (manifest.formatVersion !== 2) {
+  // ⚠️ **不猜，不兼容就报错。** v0.2 的包（formatVersion 2）里`notes` 装着
+  // 观察与判断的混合体，导进v3 无法自动拆开 —— 而猜错比不猜贵：
+  // 猜错等于把我的判断当成原作事实永久存进库里。
+  if (manifest.formatVersion !== EXPORT_FORMAT_VERSION) {
     throw new Error(
       manifest.formatVersion === 1
-        ? '这是 v0.1 的老导出包（formatVersion 1），当前版本是 2。老包没有 domain / taxonomy / tag 来源信息，无法无损导入。'
-        : `不认识的包版本：${manifest.formatVersion}`,
+        ? '这是 v0.1 的老导出包（formatVersion 1），当前是 3。老包没有 domain / taxonomy / tag 来源信息，无法无损导入。'
+        : manifest.formatVersion === 2
+          ? '这是 v0.2 的导出包（formatVersion 2），当前是 3。老包的 notes 里观察与判断混在一起，' +
+            '自动拆分只能靠猜 —— 猜错等于把我的判断当原作事实存下来。要导入请先把 notes 手工拆成 observed / read。'
+          : `不认识的包版本：${manifest.formatVersion}（当前 ${EXPORT_FORMAT_VERSION}）`,
     )
   }
 
@@ -112,7 +122,11 @@ export async function importFrom(root: string) {
       imagePath: localPath,
       imageSource: entry.imageSource === 'paste' ? 'paste' : 'file',
       originalName: entry.originalName,
-      notes: entry.notes,
+      // ⚠️ observed 同时接受 notes：v3 的包里 notes 恒为空，但手工编辑过的
+      // 包可能有。observed 优先，两者都给时以 observed 为准。
+      observed: entry.observed || entry.notes || '',
+      read: entry.read ?? '',
+      worthwhileBecause: entry.worthwhileBecause ?? '',
       // ⚠️ status 来自导入包，是不可信输入。不能直接 `as EntryStatus` 断言 ——
       // createEntry 里的 assertStatus 只在字段存在时校验，传 undefined 就跳过了。
       // 所以这里显式过滤：认得的才给，不认得的走默认 inbox。
@@ -124,16 +138,25 @@ export async function importFrom(root: string) {
 
     // ⚠️ tag 分两批挂：origin='system' 的走 attachSystemTag（要求 ruleId 非空，
     // 且保住 origin）。混在一起批量挂会把系统 tag 降级成 user —— origin 就白存了。
+    // ⚠️ group 同样来自导入包，是不可信输入：认得的才给，不认得的走空串。
+    const groups = new Map<string, TagGroup>()
+    for (const tag of entry.tags ?? []) {
+      groups.set(tag.name, isTagGroupKey(tag.group) ? tag.group : '')
+    }
+
     const userNames = (entry.tags ?? []).filter((tag) => tag.origin !== 'system').map((tag) => tag.name)
     if (userNames.length > 0) {
-      const resolved = await Promise.all(userNames.map(findOrCreateTag))
+      const resolved = await Promise.all(userNames.map((name) => findOrCreateTag(name, groups.get(name) ?? '')))
       const current = (await tagsForEntries([created.id])).get(created.id) ?? []
       const merged = [...current.map((item) => item.id)]
       for (const tag of resolved) if (!merged.includes(tag.id)) merged.push(tag.id)
       await setEntryTags(created.id, merged, true)
     }
     for (const tag of entry.tags ?? []) {
-      if (tag.origin === 'system' && tag.ruleId) await attachSystemTag(created.id, tag.name, tag.ruleId)
+      if (tag.origin === 'system' && tag.ruleId) {
+        // 系统 tag 也补group —— 它同样是 tag，命名空间对它一视同仁。
+        await attachSystemTag(created.id, tag.name, tag.ruleId, groups.get(tag.name) ?? '')
+      }
     }
 
     summary.created += 1

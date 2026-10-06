@@ -9,7 +9,8 @@ import { dimensionKeysOf, ENTRY_STATUSES, isDomainCode, type DomainCode, type En
 
 const MAX_NAME = 120
 const MAX_URL = 2000
-const MAX_NOTES = 8000
+/** 观察与判断都要能写长 —— 但仍然有上限，防止误粘整篇文章进来。 */
+const MAX_TEXT = 8000
 
 function parseList(value: string): string[] {
   try {
@@ -30,6 +31,9 @@ function mapEntry(
     domain: row.domain as DomainCode,
     status: row.status as EntryStatus,
     imageSource: row.imageSource as ImageSource,
+    // ⚠️ `notes` 是已废弃的别名。读的时候 observed 优先，为空才回退到 notes ——
+    // 这样即使有行是补列之前写的、observed 还是空，界面也不会突然空掉。
+    observed: row.observed || row.notes || '',
     tags: tagList,
     taxonomy,
   }
@@ -103,6 +107,13 @@ export type CreateEntryInput = {
   imagePath?: string
   imageSource?: ImageSource
   originalName?: string
+  /** 我看到了什么（客观）。 */
+  observed?: string
+  /** 我认为它为什么成立（主观）。 */
+  read?: string
+  /** 我为什么留着它。 */
+  worthwhileBecause?: string
+  /** @deprecated 合并到 observed。仅保留供旧调用方与导入包兼容。 */
   notes?: string
   status?: EntryStatus
   tagNames?: string[]
@@ -251,7 +262,18 @@ export async function listEntries(filter: ListFilter = {}): Promise<EntrySummary
 
   if (filter.q?.trim()) {
     const needle = `%${filter.q.trim()}%`
-    conditions.push(or(like(entries.name, needle), like(entries.notes, needle), like(entries.sourceGame, needle)))
+    // ⚠️ 搜 observed / read / worthwhileBecause 三个字段，不搜 notes ——
+    // notes 是已退休的别名，搜它等于让旧内容以「搜索命中」的形式复活，
+    // 而用户以为搜的是新字段。
+    conditions.push(
+      or(
+        like(entries.name, needle),
+        like(entries.observed, needle),
+        like(entries.read, needle),
+        like(entries.worthwhileBecause, needle),
+        like(entries.sourceGame, needle),
+      ),
+    )
   }
 
   const where = conditions.length > 0 ? and(...conditions) : undefined
@@ -313,7 +335,11 @@ export async function createEntry(input: CreateEntryInput): Promise<EntrySummary
     imagePath,
     imageSource: input.imageSource === 'paste' ? 'paste' : 'file',
     originalName: clip(input.originalName, MAX_NAME),
-    notes: clip(input.notes, MAX_NOTES),
+    // ⚠️ observed 同时接受 notes 是为了兼容旧调用方（导入包、脚本）。
+    // observed 优先 —— 两者都给时以 observed 为准，不做合并。
+    observed: clip(input.observed ?? input.notes, MAX_TEXT),
+    read: clip(input.read, MAX_TEXT),
+    worthwhileBecause: clip(input.worthwhileBecause, MAX_TEXT),
     status: input.status ? assertStatus(input.status) : 'inbox',
     createdAt: now,
     updatedAt: now,
@@ -348,7 +374,18 @@ export async function updateEntry(id: string, input: UpdateEntryInput): Promise<
   if (input.imagePath !== undefined) updates.imagePath = assertImagePath(input.imagePath)
   if (input.imageSource !== undefined) updates.imageSource = input.imageSource === 'paste' ? 'paste' : 'file'
   if (input.originalName !== undefined) updates.originalName = clip(input.originalName, MAX_NAME)
-  if (input.notes !== undefined) updates.notes = clip(input.notes, MAX_NOTES)
+  // ⚠️ 改 observed 时同步清掉 notes —— 那个别名留着旧值会导致下次读时
+  // 出现「我明明改了却没变」的错觉（读的是 observed，但界面对比的是 notes）。
+  if (input.observed !== undefined) {
+    updates.observed = clip(input.observed, MAX_TEXT)
+    updates.notes = ''
+  } else if (input.notes !== undefined) {
+    // 旧调用方（导入包）传notes：走 observed，让别名自然退休。
+    updates.observed = clip(input.notes, MAX_TEXT)
+    updates.notes = ''
+  }
+  if (input.read !== undefined) updates.read = clip(input.read, MAX_TEXT)
+  if (input.worthwhileBecause !== undefined) updates.worthwhileBecause = clip(input.worthwhileBecause, MAX_TEXT)
   if (input.status !== undefined) updates.status = assertStatus(input.status)
 
   await db.update(entries).set(updates).where(eq(entries.id, id))
@@ -364,7 +401,12 @@ export async function updateEntry(id: string, input: UpdateEntryInput): Promise<
     // 必须原样保留，否则用户改一次标签就把「这条属于哪个项目」的标记抹了。
     // 那正是 origin 存在的全部理由（验证脚本第 13 项抓到的真bug）。
     const names = [...new Set(input.tagNames.map((item) => clip(item, 40)).filter(Boolean))]
-    const resolved = await Promise.all(names.map(findOrCreateTag))
+    // ⚠️ **不能写names.map(findOrCreateTag)** —— findOrCreateTag 第二个参数
+    // 是 group，而 map 会把数组下标当第二个参数传进去，于是第一个 tag 拿到
+    // group=0、第二个 1……。类型检查会拦住（index 不是 TagGroup），
+    // 但一旦 findOrCreateTag 的签名变了（比如多一个参数）就会静默复发。
+    // 显式包一层箭头函数，语义与签名解耦。
+    const resolved = await Promise.all(names.map((name) => findOrCreateTag(name)))
     const now = new Date().toISOString()
     const existing = await db
       .select({ tagId: entryTags.tagId, origin: entryTags.origin, ruleId: entryTags.ruleId })
@@ -431,8 +473,11 @@ export async function setTaxonomy(
       const score = Math.min(1, Math.max(0, Math.round(value * 100) / 100))
       trx
         .insert(entryTaxonomy)
-        .values({ entryId: id, dimensionKey: key, score, updatedAt: now })
-        .onConflictDoUpdate({ target: [entryTaxonomy.entryId, entryTaxonomy.dimensionKey], set: { score, updatedAt: now } })
+        .values({ entryId: id, dimensionKey: key, score, setAt: now, updatedAt: now })
+        // ⚠️ onConflict 也更新 setAt：改分意味着「我对这条的判断变了」，
+        // 时间戳要跟着走。updatedAt 记的是「行被写过」，setAt 记的是
+        // 「判断成形于何时」—— 后者才是让「我改主意了」有痕迹的那个。
+        .onConflictDoUpdate({ target: [entryTaxonomy.entryId, entryTaxonomy.dimensionKey], set: { score, setAt: now, updatedAt: now } })
         .run()
     }
   })

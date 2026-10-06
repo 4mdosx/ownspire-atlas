@@ -108,7 +108,17 @@ export function LibraryWorkspace() {
       if (filter.tags.length > 0 && !filter.tags.every((tag) => entry.tags.some((item) => item.name === tag))) return false
       if (filter.q.trim()) {
         const needle = filter.q.trim().toLowerCase()
-        const haystack = [entry.name, entry.notes, entry.sourceGame, entry.sourceTitle, ...entry.tags.map((tag) => tag.name)]
+        // ⚠️ 客户端这份要和服务端 listEntries 的搜索字段**保持一致** ——
+        // 两边不一样会出现「筛出来 N 条、点进去搜却是 0 条」的鬼故事。
+        const haystack = [
+          entry.name,
+          entry.observed,
+          entry.read,
+          entry.worthwhileBecause,
+          entry.sourceGame,
+          entry.sourceTitle,
+          ...entry.tags.map((tag) => tag.name),
+        ]
           .join(' ')
           .toLowerCase()
         if (!haystack.includes(needle)) return false

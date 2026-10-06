@@ -270,6 +270,103 @@ async function main(): Promise<void> {
     check('不存在的维度被拒', !isDimensionOf(monster, 'nope'))
   }
 
+  // 32. ⭐ 观察与判断严格分离（2026-10-06）
+  // 这条纪律的价值只有在**互相污染时会出事**。所以验证的重点不是
+  // 「两个字段都存得下」，而是「写 observed 不会碰到 read」。
+  {
+    const split = await createEntry({
+      domain: monster,
+      name: '观察与判断',
+      sourceUrl: 'https://example.com/split',
+      observed: '攻击前身体膨胀约 0.5 秒',
+      read: '用 silhouette 变化给玩家 telegraph',
+      worthwhileBecause: '极简蓄力建立高 commitment',
+    })
+    check('observed 独立落库', split.observed === '攻击前身体膨胀约 0.5 秒', split.observed)
+    check('read 独立落库', split.read === '用 silhouette 变化给玩家 telegraph', split.read)
+    check(
+      'worthwhileBecause 独立落库',
+      split.worthwhileBecause === '极简蓄力建立高 commitment',
+      split.worthwhileBecause,
+    )
+    check('observed 不被 read 污染', !split.observed.includes('silhouette'))
+    check('read 不被 observed 污染', !split.read.includes('膨胀'))
+
+    // ⚠️ 写 observed 时 read 必须原样保留 —— 这才是「分离」的实质。
+    // 合并成一个字段的实现会在这里露馅：改一个等于改两个。
+    await updateEntry(split.id, { observed: '改过的观察' })
+    const afterObserved = await getEntryDetail(split.id)
+    check('改 observed 不动 read', afterObserved.read === '用 silhouette 变化给玩家 telegraph', afterObserved.read)
+    await updateEntry(split.id, { read: '改过的判断' })
+    const afterRead = await getEntryDetail(split.id)
+    check('改 read 不动 observed', afterRead.observed === '改过的观察', afterRead.observed)
+    check('改 read 不动 worthwhileBecause', afterRead.worthwhileBecause === split.worthwhileBecause)
+
+    // 旧的 notes 调用方式应落到 observed（导入包兼容），而不是被丢弃
+    const legacy = await createEntry({
+      domain: monster,
+      name: '旧调用方',
+      sourceUrl: 'https://example.com/legacy',
+      notes: '通过 notes 传进来的内容',
+    })
+    check('notes 落到 observed', legacy.observed === '通过 notes 传进来的内容', legacy.observed)
+    check('notes 不落到 read', legacy.read === '', `read=${JSON.stringify(legacy.read)}`)
+  }
+
+  // 33. ⭐ 搜索要覆盖三个新字段（2026-10-06）
+  // 搜得到是「我能按自己写过的话找到它」的前提 —— 观察与判断分列之后，
+  // 只搜其中一两个字段就等于让另一半内容失联。
+  {
+    const hitsObserved = await listEntries({ q: '改过的观察' })
+    check('能搜到 observed 的内容', hitsObserved.some((item) => item.observed === '改过的观察'), `${hitsObserved.length} 条`)
+    const hitsRead = await listEntries({ q: '改过的判断' })
+    check('能搜到 read 的内容', hitsRead.some((item) => item.read === '改过的判断'), `${hitsRead.length} 条`)
+    const hitsWorth = await listEntries({ q: '高 commitment' })
+    check('能搜到 worthwhileBecause', hitsWorth.length > 0, `${hitsWorth.length} 条`)
+  }
+
+  // 34. ⭐ tag 的 group 命名空间（2026-10-06）
+  {
+    const { createTag, findTagByName, listTags } = tagService
+    const tagged = await createTag('charger', 'primitive')
+    check('建 tag 时带命名空间', tagged.group === 'primitive', tagged.group)
+
+    const found = await findTagByName('charger')
+    check('读出来的 tag 保留命名空间', found?.group === 'primitive', String(found?.group))
+
+    // ⚠️ 未归类的 tag 必须能用 —— 归类不强制，随手记的频次远高于归类的需要
+    const ungrouped = await createTag('随手记的')
+    check('不传命名空间也能建 tag', ungrouped.group === '', JSON.stringify(ungrouped.group))
+
+    const all = await listTags()
+    check('listTags 带命名空间', all.every((tag) => typeof tag.group === 'string'), `${all.length} 个 tag`)
+
+    // ⚠️ 同一个名字不能建两次（唯一约束），也不该被悄悄改组
+    try {
+      await createTag('charger')
+      check('重名 tag 应被拒', false, '居然建成功了')
+    } catch (error) {
+      check('重名 tag 应被拒', true, error instanceof Error ? error.message : '')
+    }
+
+    // 改归类：能改、能改回空串
+    const { setTagGroup } = tagService
+    const regrouped = await setTagGroup('charger', 'visual')
+    check('改归类生效', regrouped.group === 'visual', regrouped.group)
+    const reread = await findTagByName('charger')
+    check('改归类持久化', reread?.group === 'visual', String(reread?.group))
+
+    const cleared = await setTagGroup('charger', '')
+    check('归类可取消', cleared.group === '', JSON.stringify(cleared.group))
+
+    try {
+      await setTagGroup('不存在的词', 'visual')
+      check('改不存在的 tag 应被拒', false, '居然没报错')
+    } catch (error) {
+      check('改不存在的 tag 应被拒', true, error instanceof Error ? error.message : '')
+    }
+  }
+
   await db.closeDatabase()
   fs.rmSync(`/tmp/atlas-verify-${stamp}.db`, { force: true })
   fs.rmSync(mediaRoot, { recursive: true, force: true })

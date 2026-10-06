@@ -356,8 +356,50 @@ export const ORIGIN_LABEL: Record<TagOrigin, string> = {
 export type Tag = {
   id: string
   name: string
+  /**
+   * 命名空间（2026-10-06）。空字符串 = 还没归类。
+   *
+   * ⚠️ 不强制：随手加一个 tag 不该被「必须先选组」拦住。归类是给
+   * Faceted Search 用的，欠着不影响找得到东西。
+   */
+  group: TagGroup
   createdAt: string
   updatedAt: string
+}
+
+export type TagGroupKey = 'primitive' | 'visual' | 'concept' | 'role' | 'context' | 'taxonomy'
+
+export const TAG_GROUP_KEYS: readonly TagGroupKey[] = [
+  'primitive',
+  'visual',
+  'concept',
+  'role',
+  'context',
+  'taxonomy',
+] as const
+
+export const TAG_GROUP_LABEL: Record<TagGroupKey, string> = {
+  primitive: '行为原型',
+  visual: '视觉形态',
+  concept: '概念',
+  role: '定位',
+  context: '场景',
+  taxonomy: '分类',
+}
+
+export const TAG_GROUP_HINT: Record<TagGroupKey, string> = {
+  primitive: '它用了什么设计套路 —— jumper / charger / swarm',
+  visual: '它长什么样 —— blob / plant / machine',
+  concept: '它表达什么概念 —— growth / split / mimic',
+  role: '在场上干什么 —— tank / support / controller',
+  context: '出现在什么场合 —— early-game / boss',
+  taxonomy: '暂时没归类的',
+}
+
+export type TagGroup = TagGroupKey | ''
+
+export function isTagGroupKey(value: string): value is TagGroupKey {
+  return (TAG_GROUP_KEYS as readonly string[]).includes(value)
 }
 
 /** 带关联元数据的 tag —— 列表和导出用这个形态。 */
@@ -368,7 +410,16 @@ export type EntryTag = Tag & {
 
 export type TaxonomyScore = {
   dimensionKey: TaxonomyDimensionKey
+  /**
+   * ⭐ **我对这条设计做的投影**，不是它的客观属性（2026-10-06）。
+   *
+   * 「0.7」的意思是「在我的怪物设计语言里，我把它理解为 0.7」，
+   * 不是「原作里它是 0.7」。半年后改成 0.55 不是数据错误，
+   * 是我对怪物设计的理解变了 —— 这个区别是整个 Atlas 的立身之本。
+   */
   score: number
+  /** 我定这个投影值的时间。改分会更新它，于是「我改主意了」有痕迹可循。 */
+  setAt: string
   updatedAt: string
 }
 
@@ -387,7 +438,28 @@ export type Entry = {
   imageSource: ImageSource
   originalName: string
 
-  notes: string
+  /**
+   * ⭐ 观察 —— **我看到了什么**。「攻击前身体膨胀 0.5 秒」写这里。
+   *
+   * 与 read 严格分开：混在一起的话，半年后无法分辨哪句是原作事实、
+   * 哪句是我的解读 —— 而混在一起的判断等于没有判断。
+   */
+  observed: string
+
+  /**
+   * ⭐ 判断 —— **我认为它为什么成立**。「用 silhouette 变化给玩家
+   * telegraph」写这里。
+   */
+  read: string
+
+  /**
+   * ⭐ 我为什么留着它。整条记录里半年后最值钱的一句。
+   *
+   * tag 只能回答「它属于哪些类」，这一句回答「当初为什么觉得有意思」。
+   * 可空，但界面上必须在最显眼的位置 —— 它才是这个系统区别于
+   * 收藏夹与 wiki 的地方。
+   */
+  worthwhileBecause: string
 
   status: EntryStatus
   createdAt: string

@@ -101,7 +101,7 @@ export function QuickAdd({
     setTagInput('')
     setTags([])
     // ⚠️ 刻意**不**重置 showTaxonomy。存一条不该改变用户主动折叠/展开的意图 ——
-    // 连续录20 条时，他收起了度量就是不想被打扰，下一条也该是收起的。
+    // 连续录 20 条时，他收起设计空间就是不想被打扰，下一条也该是收起的。
     setTaxonomy({})
     setError('')
   }, [image])
@@ -291,7 +291,7 @@ onDrop={(event) => void handleDrop(event)}
         <span>存进</span>
         <span className="font-medium text-foreground">{domain.labelZh}</span>
         <span>·</span>
-        <span>{dimensionsOf(domain.code).length} 个度量维度可选</span>
+        <span>可以给它在我这套设计语言里定个位</span>
         <span className="ml-auto">粘图 → 打 tag → Enter</span>
       </div>
       <div className="flex gap-4 p-4">
@@ -386,7 +386,7 @@ onDrop={(event) => void handleDrop(event)}
             className="flex items-center gap-1 pt-1 text-[11px] text-muted-foreground hover:text-foreground"
           >
             <ChevronRight className={cn('size-3 transition-transform', showTaxonomy && 'rotate-90')} />
-            {showTaxonomy ? '收起度量' : '展开度量（可跳过）'}
+            {showTaxonomy ? '收起设计空间' : '给它定个位（可跳过）'}
             {Object.keys(taxonomy).length > 0 && <span className="text-foreground">已评 {Object.keys(taxonomy).length}</span>}
           </button>
 
