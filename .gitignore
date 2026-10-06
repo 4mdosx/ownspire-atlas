@@ -1,8 +1,13 @@
 node_modules/
+# ⚠️ .next 必须**不带尾斜杠**：dev:local 会把它变成指向 $TMPDIR 的**符号链接**，
+# git 认为那是文件，而 `.next/` 只匹配目录 —— 符号链接会被当成待跟踪文件，
+# 把 /tmp 里的构建产物全带进仓库。
+.next
 .next/
 .next-local/
 .next-run/
 .next-*/
+tmp/
 out/
 build/
 

@@ -3,7 +3,7 @@ import './globals.css'
 
 export const metadata: Metadata = {
   title: 'Creative Atlas',
-  description: '个人创意采集库 · v0只有 Monster 一个 Collection',
+  description: '个人创意采集库 · 怪物是首个库，通用化后按 domain 分流',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

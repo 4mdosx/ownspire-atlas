@@ -4,23 +4,25 @@ const allowedOrigins = (process.env.SERVER_ACTION_ALLOWED_ORIGINS ?? '')
   .filter(Boolean)
 
 /**
- * distDir 可被 ATLAS_DIST_DIR 覆盖。
+ * ⚠️ **不要试图用 distDir 绕开本机的 rename 拦截**（2026-10-06 实测无效）。
  *
- * ⚠️ 存在的原因很具体：WorkBuddy 的 safe-delete shim 会拦 `unlink` 与部分
- * `rename`，而 Next 在重建 `.next/dev/server/server-reference-manifest.json`
- * 时正好要走「写 .tmp 再 rename 覆盖」这一步 —— 于是在本机上 dev server 与
- * `next build` 都会以 `EPERM: operation not permitted, rename ...` 收场。
- * 这不是代码问题（同一份代码换目录就正常跑）。
+ * 本机 WorkBuddy 的 safe-delete shim 会拦 `unlink` 与部分 `rename`，而
+ * turbopack 重建缓存时要走「写 CURRENT.next 再 rename 覆盖」这一步 ——
+ * dev server 与 `next build` 都会以 `EPERM: ... rename ...` 收场。
  *
- * 不设这个变量时行为与从前完全一致，容器构建不受影响。
+ * 试过并确认**无效**的方案：换 distDir（含绝对路径 —— Next 16 会把 distDir
+ * 拼到项目根目录下，`/tmp/x` 变成 `<repo>/tmp/x`，仍在工作区内）、
+ * `--webpack` 后端、清扩展属性、非沙箱模式。
+ *
+ * 要跑 dev server 用 `npm run dev:local`，它把缓存放到工作区外。
  */
+
 const nextConfig = {
   experimental: {
     serverActions: {
       allowedOrigins,
     },
   },
-  ...(process.env.ATLAS_DIST_DIR ? { distDir: process.env.ATLAS_DIST_DIR } : {}),
 }
 
 module.exports = nextConfig

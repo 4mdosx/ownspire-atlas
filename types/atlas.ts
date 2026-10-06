@@ -10,56 +10,348 @@ export const STATUS_LABEL: Record<EntryStatus, string> = {
 
 export type ImageSource = 'paste' | 'file'
 
-/** 受控 tag 的五个维度。自由 tag 不受此约束。 */
-export const CONTROLLED_TAXONOMY = {
-  form: ['humanoid', 'beast', 'blob', 'insect', 'construct'],
-  scale: ['tiny', 'small', 'medium', 'large', 'huge'],
-  movement: ['ground', 'flying', 'jumping', 'crawling', 'teleport'],
-  combat: ['melee', 'ranged', 'charger', 'zoner', 'summoner'],
-  role: ['fodder', 'pressure', 'disruptor', 'tank', 'elite', 'boss'],
-} as const
+/* ──────────────────────────────────────────────────────────────
+ * Domain
+ *
+ * ⚠️ domain 列表**不进数据库**，留在代码常量里。现在只有一个 domain，
+ * 进表是提前付设计成本（多两张表、多一层 join、顺序和中英文要 seed）。
+ * `entries.domain` 这一列本身足够支撑 Catalog 跨类型查询。
+ *
+ * 等第二个 domain 真出现、维度真要分叉，再把这份常量搬进表 —— 那时候搬
+ * 是有数据支撑的。
+ * ────────────────────────────────────────────────────────────── */
 
-export type TaxonomyDimension = keyof typeof CONTROLLED_TAXONOMY
+export type DomainCode = 'monster'
+
+export type DomainDef = {
+  code: DomainCode
+  labelZh: string
+  labelEn: string
+  /** 界面上选库时的一句话说明。 */
+  hintZh: string
+  icon: string
+}
+
+export const DOMAINS: readonly DomainDef[] = [
+  {
+    code: 'monster',
+    labelZh: '怪物',
+    labelEn: 'Monster',
+    hintZh: '生物形态、战斗定位、行为模式',
+    icon: 'monster',
+  },
+] as const
+
+export function isDomainCode(value: string): value is DomainCode {
+  return DOMAINS.some((domain) => domain.code === value)
+}
+
+export function domainOf(code: string): DomainDef | null {
+  return DOMAINS.find((domain) => domain.code === code) ?? null
+}
+
+/* ──────────────────────────────────────────────────────────────
+ * Taxonomy —— 连续打分，与 tag 系统无关
+ *
+ * tag 是「是/不是」的分类标签，taxonomy 是「有多」的度量刻度。两者互不隶属：
+ * · tag 任意输入，没有白名单，一套 tag 跨 domain 复用
+ * · taxonomy 维度由 domain 确定，中英文双语，存 0–1 连续分
+ *
+ * ⚠️ **维度定义在这里，不在数据库。** 见上方 domain 同理。
+ *
+ * ⭐ **两级结构：domain → group → dimension**（2026-10-06）
+ *
+ * 原来是平铺五个维度（form/scale/movement/combat/role），界面上就是五行，
+ * 看不出它们之间「谁和谁是一伙的」。现在按语义聚成两个 group：
+ *
+ *   形态 Form        它长什么样 —— 是什么东西、多大
+ *     ├ form    形态型
+ *     └ scale   体量
+ *   战斗 Combat      它怎么动、怎么打、干什么
+ *     ├ movement  移动
+ *     ├ combat    战斗方式
+ *     └ role      定位
+ *
+ * 「Scale 放进 Form」「Movement 和 Role 放进 Combat」就是这个意思。
+ * group 只是**展示层的归类**，不落库、不进 entry_taxonomy —— 那是 key 的
+ * 扁平结构该背的债，不该让数据模型替界面的分组长久买单。
+ * ────────────────────────────────────────────────────────────── */
+
+export type TaxonomyDimensionKey = 'form' | 'scale' | 'movement' | 'combat' | 'role'
+
+/** 维度的归类 group —— 纯展示用，不进数据库。 */
+export type TaxonomyGroupKey = 'form' | 'combat'
+
+export type TaxonomyDimensionDef = {
+  key: TaxonomyDimensionKey
+  labelZh: string
+  labelEn: string
+  /** 归到哪个 group。决定界面上挨着谁。 */
+  group: TaxonomyGroupKey
+  /**
+   * 这一轴的**完整档位**，从低到高。
+   *
+   * ⚠️ 这不是「示例值」—— 它是打分的语义边界。给 3 个词当示例，用户就只
+   * 敢在这 3 个词里选；给全档位，用户才知道「5分」该落在哪个词上。
+   * 星级是 0–1 连续分，档位描述的是那条轴上**有意义的几个位置**。
+   */
+  anchors: readonly string[]
+  /** 一句话说明这一轴在衡量什么。给人看。 */
+  hintZh: string
+}
+
+export type TaxonomyGroupDef = {
+  key: TaxonomyGroupKey
+  labelZh: string
+  labelEn: string
+  hintZh: string
+}
+
+/** monster domain 的 group —— 展示层的归类。 */
+export const MONSTER_TAXONOMY_GROUPS: readonly TaxonomyGroupDef[] = [
+  { key: 'form', labelZh: '形态', labelEn: 'Form', hintZh: '它是什么东西、多大' },
+  { key: 'combat', labelZh: '战斗', labelEn: 'Combat', hintZh: '它怎么动、怎么打、干什么' },
+] as const
 
 /**
- * 反查：某个 tag 属于哪个维度？不在五组之内就是自由 tag。
- * 筛选面板靠它把受控 tag 分组显示。
+ * domain → group 定义。
+ *
+ * ⚠️ 与 TAXONOMY_BY_DOMAIN 同理：group 也不进数据库。组件通过
+ * `groupsOf(domain)` 取，**不直接 import MONSTER_TAXONOMY_GROUPS** ——
+ * 否则换 domain 就要改组件，那等于把 domain 的知识漏进界面代码里。
  */
-export function dimensionOf(tagName: string): TaxonomyDimension | null {
-  for (const [dimension, values] of Object.entries(CONTROLLED_TAXONOMY)) {
-    if ((values as readonly string[]).includes(tagName)) return dimension as TaxonomyDimension
+export const TAXONOMY_GROUPS_BY_DOMAIN: Record<DomainCode, readonly TaxonomyGroupDef[]> = {
+  monster: MONSTER_TAXONOMY_GROUPS,
+}
+
+/** monster domain 的五个维度，落在两个 group 下。 */
+export const MONSTER_TAXONOMY: readonly TaxonomyDimensionDef[] = [
+  {
+    key: 'form',
+    labelZh: '形态型',
+    labelEn: 'Form',
+    group: 'form',
+    anchors: ['blob', 'humanoid', 'beast', 'insect', 'construct'],
+    hintZh: '轮廓上属于哪一类',
+  },
+  {
+    key: 'scale',
+    labelZh: '体量',
+    labelEn: 'Scale',
+    group: 'form',
+    anchors: ['tiny', 'small', 'medium', 'large', 'huge'],
+    hintZh: '相对同场景参照物的大小',
+  },
+  {
+    key: 'movement',
+    labelZh: '移动',
+    labelEn: 'Movement',
+    group: 'combat',
+    anchors: ['static', 'ground', 'jumping', 'flying', 'teleport'],
+    hintZh: '在场上怎么移动，静态算最低档',
+  },
+  {
+    key: 'combat',
+    labelZh: '战斗方式',
+    labelEn: 'Combat',
+    group: 'combat',
+    anchors: ['melee', 'ranged', 'charger', 'zoner', 'summoner'],
+    hintZh: '主要用什么手段造成伤害',
+  },
+  {
+    key: 'role',
+    labelZh: '定位',
+    labelEn: 'Role',
+    group: 'combat',
+    anchors: ['fodder', 'pressure', 'disruptor', 'tank', 'elite', 'boss'],
+    hintZh: '在编队里承担什么职能，递增',
+  },
+] as const
+
+/** domain → 维度定义。换 domain 就换一组维度。 */
+export const TAXONOMY_BY_DOMAIN: Record<DomainCode, readonly TaxonomyDimensionDef[]> = {
+  monster: MONSTER_TAXONOMY,
+}
+
+export function dimensionsOf(domain: DomainCode): readonly TaxonomyDimensionDef[] {
+  return TAXONOMY_BY_DOMAIN[domain] ?? []
+}
+
+/** 某个 group 下的维度，按定义顺序。界面上按 group 分块渲染用它。 */
+export function dimensionsInGroup(
+  domain: DomainCode,
+  group: TaxonomyGroupKey,
+): readonly TaxonomyDimensionDef[] {
+  return dimensionsOf(domain).filter((dimension) => dimension.group === group)
+}
+
+/** 某个 domain 的 group 列表（按定义顺序）。 */
+export function groupsOf(domain: DomainCode): readonly TaxonomyGroupDef[] {
+  return TAXONOMY_GROUPS_BY_DOMAIN[domain] ?? []
+}
+
+export function dimensionKeysOf(domain: DomainCode): readonly TaxonomyDimensionKey[] {
+  return dimensionsOf(domain).map((dimension) => dimension.key)
+}
+
+/** 维度 key 是否属于该 domain —— **写入侧校验**用的就是这个。 */
+export function isDimensionOf(domain: DomainCode, key: string): boolean {
+  return dimensionsOf(domain).some((dimension) => dimension.key === key)
+}
+
+export function dimensionOf(domain: DomainCode, key: TaxonomyDimensionKey): TaxonomyDimensionDef | null {
+  return dimensionsOf(domain).find((dimension) => dimension.key === key) ?? null
+}
+
+/* ── 星级 ⇆ score 映射 ──────────────────────────────────────────
+ *
+ * ⚠️ 数据是 0–1 连续分（0.01 精度），界面是 1–5 星（5 档离散）。这两个数
+ * 对不上，映射规则必须先定死，否则后面对不上：
+ *
+ * · 点击星星 → 0.2 步进（半星可点，10 档）
+ * · 方向键   → 0.01 步进
+ * · 显示     → star = round(score × 5)，悬停显示原始 score
+ *
+ * **星级是显示编码，不是数据。** 数据库存 score，不存星数。
+ * ────────────────────────────────────────────────────────────── */
+
+export const TAXONOMY_MIN = 0
+export const TAXONOMY_MAX = 1
+export const TAXONOMY_STARS = 5
+/** 点击一颗星的步进：半星可点 → 10 档。 */
+export const TAXONOMY_CLICK_STEP = 0.2
+/** 方向键微调步进。 */
+export const TAXONOMY_FINE_STEP = 0.01
+
+export function scoreToStars(score: number): number {
+  return Math.round(clampScore(score) * TAXONOMY_STARS)
+}
+
+export function starsToScore(star: number): number {
+  return clampScore(round2(star / TAXONOMY_STARS))
+}
+
+/**
+ * 档位 → score。
+ *
+ * ⭐ 这是「点档位等于打分」的映射（2026-10-06）。**落在该轴的倒数第几格，
+ * 就打该轴上对应的那个分数** —— 所以点「huge」不是打满星，而是打这一轴
+ * 的第五档（0.8）。留一档给「比 huge 还夸张」的情况，也避免点任何档位都
+ * 变成 1.0，那样 0.8 以上的精度就只能靠数字框，界面上再也走不到。
+ *
+ * 3 档的轴落在 0.33 / 0.67（round2 后0.34 / 0.66 是显示层的妥协，存的是
+ * 精确值）；5 档 → 0.2/0.4/0.6/0.8；6 档 → 0.17/0.33/0.5/0.67/0.83。
+ */
+export function anchorToScore(dimension: TaxonomyDimensionDef, anchor: string): number | null {
+  const index = dimension.anchors.findIndex((item) => item === anchor)
+  if (index < 0 || dimension.anchors.length === 0) return null
+  // (index + 1) / (length + 1)：第 1 档在1/(n+1)，最后一档在 n/(n+1)，永不等于 1。
+  return clampScore(round2((index + 1) / (dimension.anchors.length + 1)))
+}
+
+/** score → 最接近的档位词。用于把已存的score 显示成「huge」这样的词。 */
+export function scoreToAnchor(dimension: TaxonomyDimensionDef, score: number): string | null {
+  if (score === undefined) return null
+  const target = clampScore(score)
+  let best: string | null = null
+  let bestGap = Number.POSITIVE_INFINITY
+  for (const anchor of dimension.anchors) {
+    const candidate = anchorToScore(dimension, anchor)
+    if (candidate === null) continue
+    const gap = Math.abs(candidate - target)
+    if (gap < bestGap) {
+      bestGap = gap
+      best = anchor
+    }
   }
-  return null
+  return best
 }
 
-export type MonsterEntry = {
-  id: string
-  name: string
-
-  sourceUrl: string
-  sourceTitle: string
-  sourceGame: string
-
-  /** 相对 media 根的路径，例如 'm-01x2y3z/0.png'。相对路径是为了导出与迁移。 */
-  imagePath: string
-  imageSource: ImageSource
-  originalName: string
-
-  notes: string
-
-  bodyType: string
-  scale: string
-  /** JSON 编码的字符串数组。未设置时是 '[]'，不是 null —— 空和未填在这个版本没有区别。 */
-  movement: string
-  combatRole: string
-  attackPattern: string
-
-  status: EntryStatus
-  createdAt: string
-  updatedAt: string
-
-  tags: Tag[]
+export function clampScore(score: number): number {
+  if (Number.isNaN(score)) return TAXONOMY_MIN
+  return Math.min(TAXONOMY_MAX, Math.max(TAXONOMY_MIN, score))
 }
+
+export function round2(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
+/**
+ * 星级控件的档位：0.0 / 0.2 / 0.4 / … / 1.0，共 **6 档**。
+ *
+ * ⚠️ 半星可点意味着**一整星 = 0.2**（5 星 = 1.0），所以鼠标能到的
+ * 位置是 0/0.2/0.4/0.6/0.8/1.0 —— 只有 6 个值，不是 11 个。
+ *
+ * 「5颗星 + 半星」和「11 档」不是一回事：星数是 5，半星只是让每颗星
+ * 能落在两个位置，总共仍是 6 个可点值。11 档对应的是 0.1 步进（每颗星
+ * 10 个位置），那是给滑杆用的精度。
+ *
+ * 想要 0.01 精度走滑杆 / 方向键，不靠点击。
+ */
+export const TAXONOMY_STEPS: number[] = Array.from(
+  { length: Math.round((TAXONOMY_MAX - TAXONOMY_MIN) / TAXONOMY_CLICK_STEP) + 1 },
+  (_, index) => round2(TAXONOMY_MIN + index * TAXONOMY_CLICK_STEP),
+)
+
+/* ──────────────────────────────────────────────────────────────
+ * Gallery 尺寸
+ *
+ * ⚠️ 这是**显示偏好**，不是数据 —— 所以不进数据库，跟 domain 选择一样
+ * 存 localStorage。
+ *
+ * 为什么要三档：v0 的实际用途是「一眼扫过去找东西」。160px 看得清细节但
+ * 一屏只放几张；96px 一屏几十张但看不清图；256px 是「停下来仔细看」的
+ * 状态。**三档对应三种意图**，不是「大中小」审美选择。
+ * ────────────────────────────────────────────────────────────── */
+
+export type GallerySize = 'sm' | 'md' | 'lg'
+
+export const GALLERY_SIZES: readonly GallerySize[] = ['sm', 'md', 'lg'] as const
+
+export const GALLERY_SIZE_LABEL: Record<GallerySize, string> = {
+  sm: '小',
+  md: '中',
+  lg: '大',
+}
+
+/**
+ * 每档的**最小列宽**（px）—— `auto-fill` 的那个 minmax。
+ *
+ * ⚠️ 为什么数字往小收：v0 的库是靠「扫」来用的，160px 一屏放不下几张，
+ * 扫不动。96px 才是「一屏能扫几十个」的量级。lg 留给需要看清图的时刻。
+ */
+export const GALLERY_MIN_COLUMN: Record<GallerySize, number> = {
+  sm: 96,
+  md: 160,
+  lg: 260,
+}
+
+export function isGallerySize(value: string): value is GallerySize {
+  return (GALLERY_SIZES as readonly string[]).includes(value)
+}
+
+/* ──────────────────────────────────────────────────────────────
+ * Tag origin —— 区分用户输入与系统自动添加
+ *
+ * ⚠️ origin 挂在**关联**上，不挂在 tag 实体上：tags 表里 `cute` 只有一行，
+ * 但可能你手动加过、系统也自动加过。origin 挂在 tag 上，归属就歧义了。
+ *
+ * ruleId 是系统 tag 的来源规则标识 —— 「属于什么项目」的实现基础就是：
+ * 项目相关的 tag 全部 origin='system' + ruleId，可按规则整批查、整批追溯。
+ * ────────────────────────────────────────────────────────────── */
+
+export type TagOrigin = 'user' | 'system'
+
+export const TAG_ORIGINS: readonly TagOrigin[] = ['user', 'system']
+
+export const ORIGIN_LABEL: Record<TagOrigin, string> = {
+  user: '手动',
+  system: '系统',
+}
+
+/* ──────────────────────────────────────────────────────────────
+ * 数据类型
+ * ────────────────────────────────────────────────────────────── */
 
 export type Tag = {
   id: string
@@ -68,9 +360,64 @@ export type Tag = {
   updatedAt: string
 }
 
-/** 列表页要显示的字段。刻意不含 imagePath 的原图尺寸等派生信息。 */
-export type EntrySummary = Omit<MonsterEntry, 'movement' | 'combatRole' | 'attackPattern'> & {
-  movement: string[]
-  combatRole: string[]
+/** 带关联元数据的 tag —— 列表和导出用这个形态。 */
+export type EntryTag = Tag & {
+  origin: TagOrigin
+  ruleId: string
+}
+
+export type TaxonomyScore = {
+  dimensionKey: TaxonomyDimensionKey
+  score: number
+  updatedAt: string
+}
+
+/** 顶层条目。所有 domain 共用。 */
+export type Entry = {
+  id: string
+  domain: DomainCode
+  name: string
+
+  sourceUrl: string
+  sourceTitle: string
+  sourceGame: string
+
+  /** 相对 media 根的路径，例如 'up-49b8269f/0f1e443c-preview.png'。相对路径是为了导出与迁移。 */
+  imagePath: string
+  imageSource: ImageSource
+  originalName: string
+
+  notes: string
+
+  status: EntryStatus
+  createdAt: string
+  updatedAt: string
+}
+
+/** monster domain 的扩展数据。1:1，外键指向 entries.id。 */
+export type MonsterExtension = {
+  entryId: string
+  /** JSON 编码的字符串数组。未设置时是 '[]'，不是 null —— 空和未填在这个版本没有区别。 */
   attackPattern: string[]
+  behaviorPattern: string[]
+  telegraph: string[]
+  reactionPattern: string[]
+}
+
+/**
+ * 列表页 / 详情页要显示的聚合形态。
+ *
+ * ⚠️ taxonomy 是 sparse 的：没打分的维度不出现。所以是 Record 不是定长数组。
+ * extension 只在 domain 匹配时才有值。
+ */
+export type EntryDetail = Entry & {
+  tags: EntryTag[]
+  taxonomy: Partial<Record<TaxonomyDimensionKey, number>>
+  extension: MonsterExtension | null
+}
+
+/** 列表页卡片：不含 extension 的派生内容，但要够画卡片。 */
+export type EntrySummary = Entry & {
+  tags: EntryTag[]
+  taxonomy: Partial<Record<TaxonomyDimensionKey, number>>
 }

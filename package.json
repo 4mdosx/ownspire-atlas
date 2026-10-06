@@ -7,12 +7,14 @@
   },
   "scripts": {
     "dev": "next dev -p 5600",
+    "dev:local": "node scripts/dev-local.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
     "init-db": "tsx backstage/db/init-db.ts",
     "reset-db": "tsx backstage/db/reset-db.ts",
-    "verify:untagged": "node --conditions react-server --import tsx scripts/verify-untagged.ts",
+    "verify": "node --conditions react-server --import tsx scripts/verify-atlas.ts",
+    "verify:grid": "node --import tsx scripts/verify-grid.tsx",
     "pm2:start": "next build && pm2 start ecosystem.config.js",
     "pm2:stop": "pm2 stop creative-atlas",
     "pm2:restart": "pm2 restart creative-atlas"

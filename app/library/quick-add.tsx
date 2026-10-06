@@ -1,11 +1,12 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, ImagePlus, Loader2, X } from 'lucide-react'
+import { Check, ChevronRight, ImagePlus, Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-import type { EntrySummary } from '@/types/atlas'
+import { TaxonomyRow } from './taxonomy-stars'
+import { dimensionsInGroup, dimensionsOf, groupsOf, type DomainDef, type EntrySummary, type TaxonomyDimensionKey } from '@/types/atlas'
 
 /**
  * Quick Add —— v0 最重要的一个界面。
@@ -59,12 +60,25 @@ async function uploadImageFromUrl(url: string): Promise<PendingImage> {
 const URL_IN_CLIPBOARD = /^(https?:\/\/\S+)$/
 
 export function QuickAdd({
+  domain,
   knownTags,
   onSaved,
 }: {
+  /** 当前库。domain 是必需的 —— 采集永远在一个具体的库里发生。 */
+  domain: DomainDef
   knownTags: string[]
   onSaved: (entry: EntrySummary) => void
 }) {
+  /**
+   * 展开 taxonomy 打分区。
+   *
+   * ⚠️ 默认**展开**（2026-10-06 改）。原来是收起，理由是「它是可选的，
+   * 不该挡住采集主路径」—— 但收起的结果是每次都要多点一次，而展开后
+   * 档位词点选只有一次点击的代价。**可选不等于该藏起来**。
+   * 真正要防的「逼人填表」靠的是：填了能一键清空、界面上明说「不填也行」。
+   */
+  const [showTaxonomy, setShowTaxonomy] = useState(true)
+  const [taxonomy, setTaxonomy] = useState<Partial<Record<TaxonomyDimensionKey, number>>>({})
   const [image, setImage] = useState<PendingImage | null>(null)
   const [sourceUrl, setSourceUrl] = useState('')
   const [name, setName] = useState('')
@@ -86,6 +100,9 @@ export function QuickAdd({
     setSourceGame('')
     setTagInput('')
     setTags([])
+    // ⚠️ 刻意**不**重置 showTaxonomy。存一条不该改变用户主动折叠/展开的意图 ——
+    // 连续录20 条时，他收起了度量就是不想被打扰，下一条也该是收起的。
+    setTaxonomy({})
     setError('')
   }, [image])
 
@@ -211,11 +228,13 @@ export function QuickAdd({
     .slice(0, 6)
 
   const submit = async () => {
-    if (!image) return setError('还没有图片 —— 粘贴截图、拖文件进来，或选一个文件')
     const url = sourceUrl.trim()
     if (!url) return setError('需要来源链接 —— 没有出处的东西不进 Atlas')
     // ⚠️ tags 不强制（2026-10-06 裁定）。空标签照样能存 —— 欠账用侧栏
     // 的「未打标」视图去补，不在采集入口拦。拦在这里等于逼人「先想好再存」。
+    //
+    // ⚠️ v0.2：image 也不强制了。通用化后必然有不以图为中心的采集类型。
+    // 图片入口改成旁边的提示，不做成拦截。
     const finalTags = [...tags]
     if (tagInput.trim()) finalTags.push(...[tagInput.trim()])
 
@@ -226,15 +245,17 @@ export function QuickAdd({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          domain: domain.code,
           name: name.trim(),
           sourceUrl: url,
           sourceGame: sourceGame.trim(),
           sourceTitle: document.title,
-          imagePath: image.imagePath,
-          imageSource: image.imageSource,
-          originalName: image.originalName,
+          imagePath: image?.imagePath ?? '',
+          imageSource: image?.imageSource ?? 'file',
+          originalName: image?.originalName ?? '',
           status: 'inbox',
           tagNames: finalTags,
+          taxonomy,
         }),
       })
       const body = await response.json()
@@ -264,6 +285,15 @@ onDrop={(event) => void handleDrop(event)}
           <p className="text-sm font-medium">松手就抓 —— 图片文件或图片链接都行</p>
         </div>
       )}
+      {/* ⚠️ 当前库常驻显示。domain 是上下文不是步骤 —— 看到这条就知道
+          存进去的东西归在哪，不需要每条确认一遍。 */}
+      <div className="flex items-center gap-1.5 border-b px-4 py-1.5 text-[11px] text-muted-foreground">
+        <span>存进</span>
+        <span className="font-medium text-foreground">{domain.labelZh}</span>
+        <span>·</span>
+        <span>{dimensionsOf(domain.code).length} 个度量维度可选</span>
+        <span className="ml-auto">粘图 → 打 tag → Enter</span>
+      </div>
       <div className="flex gap-4 p-4">
         <div className="flex h-28 w-28 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted">
           {uploading ? (
@@ -283,6 +313,11 @@ onDrop={(event) => void handleDrop(event)}
               <ImagePlus className="size-5" />
               <span className="text-[10px]">粘图 / 拖入</span>
             </button>
+          )}
+          {/* ⚠️ 图不再是强制字段。没图时明确说一句「可以不图」，
+              别让用户以为必须先找到图才能存。 */}
+          {!image && !uploading && (
+            <span className="pointer-events-none absolute -bottom-0.5 left-0 text-[9px] text-muted-foreground/70">可不填</span>
           )}
           {image && (
             <button type="button" onClick={reset} className="absolute right-2 top-2 rounded-full bg-background/80 p-1 hover:bg-background" title="清除">
@@ -340,6 +375,59 @@ onDrop={(event) => void handleDrop(event)}
               ))}
             </div>
           )}
+
+          {/* ⭐ taxonomy 打分区。**默认展开** —— 档位词点选只有一次点击，
+              藏起来反而每次都多点一次。分组渲染：形态 / 战斗，视觉上
+              告诉用户「这两组问的是不同的事」。 */}
+          <button
+            type="button"
+            onClick={() => setShowTaxonomy((value) => !value)}
+            aria-expanded={showTaxonomy}
+            className="flex items-center gap-1 pt-1 text-[11px] text-muted-foreground hover:text-foreground"
+          >
+            <ChevronRight className={cn('size-3 transition-transform', showTaxonomy && 'rotate-90')} />
+            {showTaxonomy ? '收起度量' : '展开度量（可跳过）'}
+            {Object.keys(taxonomy).length > 0 && <span className="text-foreground">已评 {Object.keys(taxonomy).length}</span>}
+          </button>
+
+          {showTaxonomy && (
+            /* ⚠️ max-h + overflow：度量区最多占 QuickAdd 的一半高度。
+               五个维度 × 两组全展开有 20 多行，不限高的话它会把下面的
+               Gallery 整块顶出视口 —— 那看起来就是「展开没效果」，
+               因为屏幕上只剩度量区，卡片区反而看不见了。
+               收起时这个容器不渲染，高度自己回去。 */
+            <div className="max-h-[22rem] space-y-1 overflow-y-auto rounded-md border bg-muted/30 px-3 py-1">
+              {groupsOf(domain.code).map((group) => {
+                const dimensions = dimensionsInGroup(domain.code, group.key)
+                if (dimensions.length === 0) return null
+                return (
+                  <div key={group.key} className="py-1">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                      {group.labelZh} <span className="font-normal normal-case tracking-normal">{group.labelEn}</span>
+                      <span className="ml-1.5 font-normal normal-case tracking-normal">{group.hintZh}</span>
+                    </p>
+                    <div className="divide-y">
+                      {dimensions.map((dimension) => (
+                        <TaxonomyRow
+                          key={dimension.key}
+                          dimension={dimension}
+                          value={taxonomy[dimension.key]}
+                          onChange={(score) => setTaxonomy((current) => ({ ...current, [dimension.key]: score }))}
+                          onClear={() =>
+                            setTaxonomy((current) => {
+                              const next = { ...current }
+                              delete next[dimension.key]
+                              return next
+                            })
+                          }
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col justify-between">
@@ -356,7 +444,7 @@ onDrop={(event) => void handleDrop(event)}
 
       {error && (
         <p className="border-t bg-destructive/5 px-4 py-2 text-xs text-destructive">
-          {error} —— 图片来源在上方（可粘贴），标签在下方。两者齐了就能存。
+          {error} —— 来源链接是唯一必填项，其余都能事后补。
         </p>
       )}
     </section>

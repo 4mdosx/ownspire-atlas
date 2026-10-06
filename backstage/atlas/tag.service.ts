@@ -1,9 +1,9 @@
 import 'server-only'
 import { nanoid } from 'nanoid'
-import { asc, eq, inArray } from 'drizzle-orm'
+import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { getDatabase } from '@/backstage/db/database'
-import { entryTags, monsterEntries, tags } from '@/backstage/db/schema'
-import { CONTROLLED_TAXONOMY, type Tag } from '@/types/atlas'
+import { entries, entryTags, tags } from '@/backstage/db/schema'
+import type { EntryTag, Tag, TagOrigin } from '@/types/atlas'
 
 /**
  * tag 名归一化：去首尾空白 + 压掉内部连续空白。
@@ -92,7 +92,7 @@ export async function renameTag(id: string, name: string): Promise<Tag> {
 /**
  * 删除标签，同时摘掉它挂在所有条目上的关系。
  *
- * ⚠️ 必须先摘关系再删 tag。靠 ON DELETE CASCADE 也能删掉 entry_tags 行，
+ * ⚠️ 必须先摘关系再删tag。靠 ON DELETE CASCADE 也能删掉 entry_tags 行，
  * 但显式先删能让意图明确 —— 将来若关掉 cascade，这条不会被静默漏掉。
  */
 export async function deleteTag(id: string): Promise<void> {
@@ -104,41 +104,100 @@ export async function deleteTag(id: string): Promise<void> {
   })
 }
 
-export async function tagsForEntries(entryIds: string[]): Promise<Map<string, Tag[]>> {
-  const grouped = new Map<string, Tag[]>()
+/** ⭐ 批量读 tag，带上关联上的 origin。 */
+export async function tagsForEntries(entryIds: string[]): Promise<Map<string, EntryTag[]>> {
+  const grouped = new Map<string, EntryTag[]>()
   if (entryIds.length === 0) return grouped
   const db = await getDatabase()
   const rows = await db
-    .select({ entryId: entryTags.entryId, id: tags.id, name: tags.name, createdAt: tags.createdAt, updatedAt: tags.updatedAt })
+    .select({
+      entryId: entryTags.entryId,
+      id: tags.id,
+      name: tags.name,
+      origin: entryTags.origin,
+      ruleId: entryTags.ruleId,
+      createdAt: tags.createdAt,
+      updatedAt: tags.updatedAt,
+    })
     .from(entryTags)
     .innerJoin(tags, eq(tags.id, entryTags.tagId))
     .where(inArray(entryTags.entryId, entryIds))
     .orderBy(asc(tags.name))
   for (const row of rows) {
     const list = grouped.get(row.entryId) ?? []
-    list.push({ id: row.id, name: row.name, createdAt: row.createdAt, updatedAt: row.updatedAt })
+    list.push({
+      id: row.id,
+      name: row.name,
+      origin: row.origin as TagOrigin,
+      ruleId: row.ruleId,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    })
     grouped.set(row.entryId, list)
   }
   return grouped
 }
 
-export async function setEntryTags(entryId: string, tagIds: string[]): Promise<void> {
+/**
+ * ⭐ 设置 entry 的 tag。
+ *
+ * ⚠️ **默认只替换 origin='user' 的关系，系统 tag 原样保留。**
+ *
+ * 这条是「区分用户输入与系统自动添加」的真正价值所在：用户编辑标签时
+ * 不该把系统打的项目标记一起抹掉。反过来，「清空全部」要能显式做到 ——
+ * 所以给 `includeSystem` 开关，而不是靠猜。
+ *
+ * ⚠️ 替换语义，不是只加不删。传空数组在默认模式下等于「清空用户 tag」
+ * （2026-10-06 验证脚本抓到的真bug：以前 attach 语义下传空数组是空操作）。
+ */
+export async function setEntryTags(entryId: string, tagIds: string[], includeSystem = false): Promise<void> {
   const db = await getDatabase()
-  const [entry] = await db.select({ id: monsterEntries.id }).from(monsterEntries).where(eq(monsterEntries.id, entryId)).limit(1)
+  const [entry] = await db.select({ id: entries.id }).from(entries).where(eq(entries.id, entryId)).limit(1)
   if (!entry) throw new Error('条目不存在')
+
   const unique = [...new Set(tagIds.filter((id) => id.trim()))]
   if (unique.length > 0) {
     const found = await db.select({ id: tags.id }).from(tags).where(inArray(tags.id, unique))
     if (found.length !== unique.length) throw new Error('标签不存在')
   }
+
+  // ⚠️ 先读出已有关系的 origin。删掉再重插时必须按原来的 origin 写回，
+  // 否则系统 tag 会被静默降级成 user —— 那正是这个字段存在的理由，
+  // 不能自己把它抹了。
+  const existing = await db
+    .select({ tagId: entryTags.tagId, origin: entryTags.origin, ruleId: entryTags.ruleId })
+    .from(entryTags)
+    .where(eq(entryTags.entryId, entryId))
+  const originByTag = new Map(existing.map((row) => [row.tagId, { origin: row.origin as TagOrigin, ruleId: row.ruleId }]))
+
   const now = new Date().toISOString()
   db.transaction((trx) => {
-    trx.delete(entryTags).where(eq(entryTags.entryId, entryId)).run()
-    for (const tagId of unique) trx.insert(entryTags).values({ entryId, tagId, createdAt: now }).run()
+    trx
+      .delete(entryTags)
+      .where(includeSystem ? eq(entryTags.entryId, entryId) : and(eq(entryTags.entryId, entryId), eq(entryTags.origin, 'user')))
+      .run()
+    for (const tagId of unique) {
+      const preserved = originByTag.get(tagId)
+      trx
+        .insert(entryTags)
+        .values({
+          entryId,
+          tagId,
+          origin: preserved?.origin ?? 'user',
+          ruleId: preserved?.ruleId ?? '',
+          createdAt: now,
+        })
+        .run()
+    }
   })
 }
 
-/** 采集路径用：给一批 tag 名，一次性挂上。已存在的复用，不存在的建。 */
+/**
+ * 采集路径用：给一批 tag 名，**只加不删**，系统 tag 不动。
+ *
+ * ⚠️ 名字里带ByName 就是「加」的意思，而 setEntryTags 是「替换」语义 ——
+ * 两者混用是 2026-10-06 那个「清空标签静默失效」bug 的根源。
+ */
 export async function attachEntryTagsByName(entryId: string, names: string[]): Promise<void> {
   const wanted = [...new Set(names.map(normalizeTagName).filter(Boolean))]
   if (wanted.length === 0) return
@@ -146,19 +205,58 @@ export async function attachEntryTagsByName(entryId: string, names: string[]): P
   const current = (await tagsForEntries([entryId])).get(entryId) ?? []
   const merged = [...current.map((item) => item.id)]
   for (const tag of resolved) if (!merged.includes(tag.id)) merged.push(tag.id)
+  // 只替换 user 那批 —— merged 里的系统 tag 会按原origin 写回。
   await setEntryTags(entryId, merged)
 }
 
+/** 摘掉一个 tag。系统 tag 需要显式指定 includeSystem 才会真删。 */
 export async function detachEntryTag(entryId: string, tagId: string): Promise<void> {
   const current = (await tagsForEntries([entryId])).get(entryId) ?? []
-  await setEntryTags(entryId, current.filter((item) => item.id !== tagId).map((item) => item.id))
+  const tag = current.find((item) => item.id === tagId)
+  await setEntryTags(
+    entryId,
+    current.filter((item) => item.id !== tagId).map((item) => item.id),
+    tag?.origin === 'system',
+  )
 }
 
 /**
- * tag 使用频次统计 —— 阶段 5「哪些 tag 高频 / 从来没用过」的判据来源。
+ * ⭐ 挂系统 tag —— 「属于什么项目」的实现入口。
+ *
+ * ⚠️ ruleId 是这条 tag 的来源规则标识。系统 tag 按 ruleId 整批查、整批摘，
+ * 是「一个项目背后通过 tag 实现」的可运维前提。
+ */
+export async function attachSystemTag(entryId: string, name: string, ruleId: string): Promise<void> {
+  if (!ruleId.trim()) throw new Error('系统 tag 必须带 ruleId —— 没有来源规则的系统 tag 无法追溯')
+  const tag = await findOrCreateTag(name)
+  const db = await getDatabase()
+  const now = new Date().toISOString()
+  await db
+    .insert(entryTags)
+    .values({ entryId, tagId: tag.id, origin: 'system', ruleId: ruleId.trim(), createdAt: now })
+    .onConflictDoUpdate({ target: [entryTags.entryId, entryTags.tagId], set: { origin: 'system', ruleId: ruleId.trim() } })
+}
+
+/** 整批摘掉某条规则挂上的 tag —— 项目结束时的清理。 */
+export async function detachSystemTagsByRule(ruleId: string): Promise<number> {
+  const db = await getDatabase()
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(entryTags)
+    .where(and(eq(entryTags.origin, 'system'), eq(entryTags.ruleId, ruleId)))
+  await db.delete(entryTags).where(and(eq(entryTags.origin, 'system'), eq(entryTags.ruleId, ruleId)))
+  return row?.count ?? 0
+}
+
+/**
+ * tag 使用频次统计 —— 「哪些 tag 高频 / 从来没用过」的判据来源。
  *
  * ⚠️ 只统计挂在条目上的 tag。tags 表里可能有从未被用过的 tag（建了没挂），
  * 那些正是要清理的对象，所以不能反过来从 tags 表出发数。
+ *
+ * ⚠️ `controlled` 字段保留但恒为 false —— v0.2 起 tag 没有白名单，
+ * 「是否受控」不再是 tag 的属性（那是 taxonomy 的事）。
+ * 保留字段是为了让现有 UI 调用点不用改。
  */
 export async function tagUsage(): Promise<Array<{ id: string; name: string; count: number; controlled: boolean }>> {
   const db = await getDatabase()
@@ -166,12 +264,11 @@ export async function tagUsage(): Promise<Array<{ id: string; name: string; coun
     .select({ id: tags.id, name: tags.name, entryId: entryTags.entryId })
     .from(tags)
     .leftJoin(entryTags, eq(entryTags.tagId, tags.id))
-  const controlled: ReadonlySet<string> = new Set(Object.values(CONTROLLED_TAXONOMY).flat())
   const counted = rows.map((row) => ({
     id: row.id,
     name: row.name,
     count: row.entryId ? 1 : 0,
-    controlled: controlled.has(row.name),
+    controlled: false,
   }))
   return counted.sort((left, right) => right.count - left.count || left.name.localeCompare(right.name))
 }
