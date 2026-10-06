@@ -69,10 +69,29 @@ export async function fetchImage(url: string): Promise<{ buffer: Buffer; content
     throw new Error('不是合法的 URL')
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('只支持 http / https')
-  const response = await fetch(parsed, { redirect: 'follow', signal: AbortSignal.timeout(15_000) })
-  if (!response.ok) throw new Error(`抓图失败：HTTP ${response.status}`)
+
+  let response: Response
+  try {
+    response = await fetch(parsed, { redirect: 'follow', signal: AbortSignal.timeout(15_000) })
+  } catch (error) {
+    // ⚠️ Node 的 fetch 失败时抛的错cause 里才有真因，光看 message 永远是
+    // "fetch failed" —— 那对用户等于没说话。常见两种：域名解析不了（拼错 / 无外网），
+    // 或超时。分开说，不然用户会去查错方向。
+    const reason = error instanceof Error && error.cause instanceof Error ? error.cause.message : String(error)
+    if (/ENOTFOUND|EAI_AGAIN/i.test(reason)) throw new Error(`这个域名解析不了（${parsed.hostname}）—— 检查链接拼写或网络`)
+    if (/timeout|ETIMEDOUT|abort/i.test(reason)) throw new Error(`抓图超时（15 秒）—— ${parsed.hostname} 可能太慢或不响应`)
+    if (/ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH/i.test(reason)) throw new Error(`连不上 ${parsed.hostname} —— 服务可能拒绝了这个来源`)
+    throw new Error(`抓图失败：${reason}`)
+  }
+
+  if (!response.ok) throw new Error(`抓图失败：HTTP ${response.status}${response.status === 403 ? '（对方拒绝访问，可能需要登录或 Referer）' : ''}`)
+
   const contentType = response.headers.get('content-type')?.split(';')[0].trim() ?? ''
-  if (!ALLOWED.has(contentType)) throw new Error(`这个 URL 返回的不是图片（${contentType || '未知类型'}）`)
+  if (!ALLOWED.has(contentType)) {
+    throw new Error(
+      `这个 URL 返回的不是图片（${contentType || '未知类型'}）—— 要拖的是图片本身的地址，不是页面地址`,
+    )
+  }
   const buffer = Buffer.from(await response.arrayBuffer())
   if (buffer.length > MAX_BYTES) throw new Error('远程图片过大')
   const name = decodeURIComponent(parsed.pathname.split('/').pop() ?? '') || `remote.${ALLOWED.get(contentType)}`

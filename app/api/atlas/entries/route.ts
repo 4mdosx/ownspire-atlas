@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createEntry, listEntries, statusCounts } from '@/backstage/atlas/entry.service'
+import { createEntry, listEntries, statusCounts, untaggedCount } from '@/backstage/atlas/entry.service'
 import type { EntryStatus, ImageSource } from '@/types/atlas'
 
 const message = (error: unknown) => (error instanceof Error ? error.message : 'Atlas 请求失败')
@@ -12,11 +12,17 @@ export async function GET(request: NextRequest) {
       status: (params.get('status') as EntryStatus | null) ?? undefined,
       tagNames: split(params.get('tags')),
       anyTagNames: split(params.get('anyTags')),
+      untagged: params.get('untagged') === '1' || params.get('untagged') === 'true',
       q: params.get('q') ?? undefined,
       limit: params.get('limit') ? Number(params.get('limit')) : undefined,
       offset: params.get('offset') ? Number(params.get('offset')) : undefined,
     })
-    return NextResponse.json({ success: true, data: entries, counts: await statusCounts() })
+    return NextResponse.json({
+      success: true,
+      data: entries,
+      counts: await statusCounts(),
+      untagged: await untaggedCount(),
+    })
   } catch (error) {
     return NextResponse.json({ success: false, error: message(error) }, { status: 400 })
   }

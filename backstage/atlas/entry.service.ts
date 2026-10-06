@@ -1,10 +1,10 @@
 import 'server-only'
 import path from 'node:path'
 import { nanoid } from 'nanoid'
-import { and, asc, desc, eq, inArray, like, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, like, notExists, or, sql } from 'drizzle-orm'
 import { getDatabase } from '@/backstage/db/database'
 import { entryTags, importIdMap, monsterEntries, tags } from '@/backstage/db/schema'
-import { attachEntryTagsByName, tagsForEntries } from './tag.service'
+import { attachEntryTagsByName, findOrCreateTag, tagsForEntries } from './tag.service'
 import { ENTRY_STATUSES, type EntryStatus, type EntrySummary, type ImageSource, type MonsterEntry } from '@/types/atlas'
 
 const MAX_NAME = 120
@@ -124,6 +124,8 @@ export type ListFilter = {
   tagNames?: string[]
   /** 命中任意 tag 就算。 */
   anyTagNames?: string[]
+  /** 只看没有任何标签的条目（2026-10-06 起 tags 不再强制，靠这个视图补欠账）。 */
+  untagged?: boolean
   /** 搜 name 与 notes。 */
   q?: string
   limit?: number
@@ -143,7 +145,16 @@ export async function listEntries(filter: ListFilter = {}): Promise<EntrySummary
 
   if (filter.status) conditions.push(eq(monsterEntries.status, filter.status))
 
+  // ⚠️ 未打标用 `NOT EXISTS` 而不是 `NOT IN`—— `id NOT IN (子查询)` 在子查询
+  // 结果含 NULL 时会整体返回空集，永远查不出东西。`NOT EXISTS` 按行判断，
+  // 天然没有这个坑。
+  if (filter.untagged) {
+    conditions.push(notExists(db.select({ entryId: entryTags.entryId }).from(entryTags).where(eq(entryTags.entryId, monsterEntries.id))))
+  }
+
   if (filter.tagNames && filter.tagNames.length > 0) {
+    // 选了「未打标」又选了具体 tag，逻辑上互斥 —— 明确说清，别静默返回空集。
+    if (filter.untagged) throw new Error('不能同时选「未打标」和具体标签')
     for (const name of filter.tagNames) {
       const trimmed = name.trim()
       if (!trimmed) continue
@@ -199,8 +210,15 @@ export async function countEntries(filter: ListFilter = {}): Promise<number> {
 /**
  * 采集入口。
  *
- * ⚠️ tags 强制（至少一个），但其余设计字段一律可空。这是 v0 的核心纪律：
- * Atlas 是采集系统，不是调查问卷。
+ * ⚠️ 强制字段只有两项：imagePath 与 sourceUrl。tags **不强制**。
+ * 这是2026-10-06 的裁定：tag 强制会把「先存下来、标签回头补」变成
+ * 「先想好再存」—— 那正是 v0 要消除的摩擦。
+ *
+ * 代价是会出现没标签的孤儿条目，配套是「未打标」筛选（`untagged: true`）：
+ * 不靠入口拦住，而靠一个专门的视图把欠账摊开让人补。
+ * 入口拦 = 每次采集都摩擦；事后可查 = 摩擦集中在真正该补的时候。
+ *
+ * 其余设计字段（bodyType / scale / movement…）同样一律可空。
  */
 export async function createEntry(input: CreateEntryInput): Promise<EntrySummary> {
   const sourceUrl = assertSourceUrl(input.sourceUrl)
@@ -209,8 +227,8 @@ export async function createEntry(input: CreateEntryInput): Promise<EntrySummary
   const db = await getDatabase()
   const now = new Date().toISOString()
   const id = `m-${nanoid(10)}`
+  // tags 可空 —— attachEntryTagsByName 传空数组会直接返回，不写关系行。
   const tagNames = (input.tagNames ?? []).map((item) => clip(item, 40)).filter(Boolean)
-  if (tagNames.length === 0) throw new Error('至少打一个标签 —— 不打标签的条目以后再也找不回来')
 
   await db.insert(monsterEntries).values({
     id,
@@ -258,8 +276,18 @@ export async function updateEntry(id: string, input: UpdateEntryInput): Promise<
 
   await db.update(monsterEntries).set(updates).where(eq(monsterEntries.id, id))
   if (input.tagNames !== undefined) {
-    const tagNames = input.tagNames.map((item) => clip(item, 40)).filter(Boolean)
-    await attachEntryTagsByName(id, tagNames)
+    // ⚠️ 这里必须是**替换**语义，不能用 attachEntryTagsByName。
+    // attach 是「只加不删」，传空数组等于空操作 —— 摘不掉标签，
+    // 「清空标签」会静默失效（2026-10-06 验证脚本抓到的真 bug）。
+    // 而 tag 是先解析后删关系：findOrCreateTag 自己也会写库，
+    // 放进同一个事务里与 delete 交错容易出死锁。
+    const names = [...new Set(input.tagNames.map((item) => clip(item, 40)).filter(Boolean))]
+    const resolved = await Promise.all(names.map(findOrCreateTag))
+    const now = new Date().toISOString()
+    db.transaction((trx) => {
+      trx.delete(entryTags).where(eq(entryTags.entryId, id)).run()
+      for (const tag of resolved) trx.insert(entryTags).values({ entryId: id, tagId: tag.id, createdAt: now }).run()
+    })
   }
   return getEntry(id)
 }
@@ -304,6 +332,21 @@ export async function statusCounts(): Promise<Record<EntryStatus, number>> {
     if ((ENTRY_STATUSES as string[]).includes(row.status)) counts[row.status as EntryStatus] = row.count
   }
   return counts
+}
+
+/**
+ * 未打标的条目数 —— 侧栏「未打标」那一项的计数。
+ *
+ * tags 既然不强制了，这个数就是**欠账**。它得是真数，不能靠前端数当前
+ * 加载的那几十条 —— 那样只会在库很小时碰巧正确。
+ */
+export async function untaggedCount(): Promise<number> {
+  const db = await getDatabase()
+  const [row] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(monsterEntries)
+    .where(notExists(db.select({ entryId: entryTags.entryId }).from(entryTags).where(eq(entryTags.entryId, monsterEntries.id))))
+  return row?.count ?? 0
 }
 
 /**

@@ -1,5 +1,8 @@
 node_modules/
 .next/
+.next-local/
+.next-run/
+.next-*/
 out/
 build/
 

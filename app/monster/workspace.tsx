@@ -22,7 +22,8 @@ export function MonsterWorkspace() {
   const [entries, setEntries] = useState<EntrySummary[]>([])
   const [tags, setTags] = useState<Tag[]>([])
   const [counts, setCounts] = useState<Record<EntryStatus, number>>({ inbox: 0, reviewed: 0, reference: 0 })
-  const [filter, setFilter] = useState<AtlasFilter>({ tags: [], q: '' })
+  const [untagged, setUntagged] = useState(0)
+  const [filter, setFilter] = useState<AtlasFilter>({ tags: [], q: '', untagged: false })
   const [selected, setSelected] = useState<EntrySummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -34,6 +35,7 @@ export function MonsterWorkspace() {
       if (!response.ok || !body.success) throw new Error(body.error || '加载失败')
       setEntries(body.data)
       setCounts(body.counts)
+      setUntagged(body.untagged ?? 0)
       setError('')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '加载失败')
@@ -55,6 +57,7 @@ export function MonsterWorkspace() {
 
   const visible = entries.filter((entry) => {
     if (filter.status && entry.status !== filter.status) return false
+    if (filter.untagged && entry.tags.length > 0) return false
     if (filter.tags.length > 0 && !filter.tags.every((tag) => entry.tags.some((item) => item.name === tag))) return false
     if (filter.q.trim()) {
       const needle = filter.q.trim().toLowerCase()
@@ -89,7 +92,7 @@ export function MonsterWorkspace() {
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <AtlasSidebar entries={entries} tags={tags} filter={filter} onFilter={setFilter} counts={counts} />
+        <AtlasSidebar entries={entries} tags={tags} filter={filter} onFilter={setFilter} counts={counts} untaggedCount={untagged} />
 
         <main className="flex min-w-0 flex-1 flex-col">
           <FilterBar filter={filter} onFilter={setFilter} resultCount={visible.length} />

@@ -18,7 +18,7 @@ import type { EntrySummary } from '@/types/atlas'
  * - 来源链接用一次粘贴完成（浏览器剪贴板里的 URL），不要求用户手动选中复制。
  *   用户真正的动作是「复制图片地址」——那已经在剪贴板里了。
  * - tag 输入框自动聚焦。整条链路是：Cmd+V 粘图 → 打字打 tag → Enter。
- * - 存完不清空输入框形状，只清空内容并重新聚焦 —— 上��条和下一条往往是同一批参考。
+ * - 存完不清空输入框形状，只清空内容并重新聚焦 —— 上一条和下一条往往是同一批参考。
  */
 
 type PendingImage = { imagePath: string; imageSource: 'paste' | 'file'; originalName: string; previewUrl: string; fetchedFrom?: string }
@@ -33,13 +33,27 @@ async function uploadImage(file: File, imageSource: 'paste' | 'file'): Promise<P
   return { ...body.data, previewUrl: URL.createObjectURL(file) }
 }
 
+/**
+ * 抓远端图。
+ *
+ * ⚠️ 预览不能靠 `/api/atlas/entries/pending/image` —— 那条按 entryId 取图，
+ * 条目此刻还不存在，必定404。改走 `/api/atlas/media?path=`，那是给「已落盘但
+ * 还没入库」的图用的预览通道。
+ */
 async function uploadImageFromUrl(url: string): Promise<PendingImage> {
-  const form = new FormData()
-  form.append('url', url)
-  const response = await fetch('/api/atlas/images', { method: 'POST', body: form })
+  const response = await fetch('/api/atlas/images', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  })
   const body = await response.json()
   if (!response.ok || !body.success) throw new Error(body.error || '抓图失败')
-  return { ...body.data, previewUrl: `/api/atlas/entries/${'pending'}/image` }
+  return {
+    ...body.data,
+    imageSource: 'paste',
+    previewUrl: `/api/atlas/media?path=${encodeURIComponent(body.data.imagePath)}`,
+    fetchedFrom: body.data.fetchedFrom ?? url,
+  }
 }
 
 const URL_IN_CLIPBOARD = /^(https?:\/\/\S+)$/
@@ -75,7 +89,7 @@ export function QuickAdd({
     setError('')
   }, [image])
 
-  /** 收到剪贴板里���图片或 URL 时自动落盘。这是最高频的入口，所以挂在全局。 */
+  /** 收到剪贴板里的图片或 URL 时自动落盘。这是最高频的入口，所以挂在全局。 */
   useEffect(() => {
     const onPaste = async (event: ClipboardEvent) => {
       const target = event.target as HTMLElement | null
@@ -126,6 +140,61 @@ export function QuickAdd({
     }
   }
 
+  /**
+   * 拖进来的是 URL 时走这条：服务端抓图落盘，然后把 URL 同时填进来源。
+   *
+   * ⚠️ 来源自动填是故意的：从浏览器地址栏拖过来的那个 URL 本身就是出处，
+   * 让用户再手动敲一遍是纯摩擦。「拖 URL = 图 + 来源一次到手」。
+   */
+  const handleUrl = async (raw: string) => {
+    const url = raw.trim()
+    if (!URL_IN_CLIPBOARD.test(url)) {
+      return setError('拖进来的既不是图片也不是 http(s) 链接 —— 试试直接拖图片文件，或拖图片地址')
+    }
+    setUploading(true)
+    setError('')
+    try {
+      const saved = await uploadImageFromUrl(url)
+      setImage(saved)
+      setSourceUrl((current) => current || url)
+      tagInputRef.current?.focus()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '抓图失败')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  /**
+   * 拖放入口。
+   *
+   * ⚠️ **必须同时读 files 和文本**。从浏览器标签页/地址栏拖过来的是纯文本，
+   * `dataTransfer.files` 是空的 —— 只读 files 会让这类拖放**静默无反应**，
+   * 用户完全看不出发生了什么（2026-10-06 踩到：拖 URL 拖不进去，
+   * 必须先存到桌面再拖文件）。
+   *
+   * 另外从别的应用拖图（比如 Finder、Figma）时 files 里有；从 Chrome 拖链接
+   * 时 files 空、text/plain 里有 URL。两条路都得接。
+   */
+  const handleDrop = async (event: React.DragEvent) => {
+    event.preventDefault()
+    setDragging(false)
+    const files = Array.from(event.dataTransfer.files ?? [])
+    if (files.some((item) => item.type.startsWith('image/'))) {
+      await handleFiles(files)
+      return
+    }
+    // uri-list 是浏览器拖链接时的标准格式；text/plain 是从纯文本编辑器拖过来的。
+    const uriList = event.dataTransfer.getData('text/uri-list')
+    const plain = event.dataTransfer.getData('text/plain')
+    const candidate = (uriList || plain).split('\n').map((line) => line.trim()).find((line) => URL_IN_CLIPBOARD.test(line))
+    if (candidate) {
+      await handleUrl(candidate)
+      return
+    }
+    if (files.length > 0) return setError('拖进来的文件不是图片')
+  }
+
   const commitTag = (raw: string) => {
     const cleaned = raw.trim().replace(/^#/, '').replace(/\s+/g, ' ')
     if (!cleaned) return
@@ -145,9 +214,10 @@ export function QuickAdd({
     if (!image) return setError('还没有图片 —— 粘贴截图、拖文件进来，或选一个文件')
     const url = sourceUrl.trim()
     if (!url) return setError('需要来源链接 —— 没有出处的东西不进 Atlas')
+    // ⚠️ tags 不强制（2026-10-06 裁定）。空标签照样能存 —— 欠账用侧栏
+    // 的「未打标」视图去补，不在采集入口拦。拦在这里等于逼人「先想好再存」。
     const finalTags = [...tags]
     if (tagInput.trim()) finalTags.push(...[tagInput.trim()])
-    if (finalTags.length === 0) return setError('至少打一个标签 —— 不打标签的条目以后再也找不回来')
 
     setBusy(true)
     setError('')
@@ -179,27 +249,30 @@ export function QuickAdd({
     }
   }
 
-  return (
+return (
     <section
-      className={cn('rounded-xl border-2 border-dashed transition-colors', dragging ? 'border-primary bg-accent/40' : 'border-border')}
+      className={cn('relative rounded-xl border-2 border-dashed transition-colors', dragging ? 'border-primary bg-accent/40' : 'border-border')}
       onDragOver={(event) => {
-        event.preventDefault()
-        setDragging(true)
-      }}
+event.preventDefault()
+     setDragging(true)
+   }}
       onDragLeave={() => setDragging(false)}
-      onDrop={(event) => {
-        event.preventDefault()
-        setDragging(false)
-        void handleFiles(event.dataTransfer.files)
-      }}
+onDrop={(event) => void handleDrop(event)}
     >
+      {dragging && (
+        <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-xl bg-background/80">
+          <p className="text-sm font-medium">松手就抓 —— 图片文件或图片链接都行</p>
+        </div>
+      )}
       <div className="flex gap-4 p-4">
         <div className="flex h-28 w-28 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted">
           {uploading ? (
             <Loader2 className="size-5 animate-spin text-muted-foreground" />
           ) : image ? (
-            // 预览用 objectURL；抓到远端图时用blob 占位，落库后 Gallery 会用真图
-            image.previewUrl.startsWith('blob:') ? (
+            // 预览有两种来源：本地文件给的是 blob: URL，拖链接给的是 /api/atlas/media?path=
+            // 两者都要显示图 —— 之前只认 blob，拖链接进来的图会一直显示占位图标，
+            // 让人以为没抓成功。
+            image.previewUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={image.previewUrl} alt="" className="size-full object-contain" />
             ) : (
@@ -243,7 +316,7 @@ export function QuickAdd({
             <Input
               ref={tagInputRef}
               aria-label="加标签"
-              placeholder={tags.length === 0 ? '打 1–5 个标签，回车确认' : '再加一个…'}
+              placeholder={tags.length === 0 ? '标签（可空，回头补）' : '再加一个…'}
               value={tagInput}
               onChange={(event) => setTagInput(event.target.value)}
               onBlur={() => commitTag(tagInput)}

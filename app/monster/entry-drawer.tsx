@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { ExternalLink, Trash2 } from 'lucide-react'
+import { ExternalLink, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input, Textarea } from '@/components/ui/input'
 import { STATUS_LABEL, type EntryStatus, type EntrySummary } from '@/types/atlas'
@@ -20,9 +20,28 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
   onDeleted: (id: string) => void
 }) {
   const [draft, setDraft] = useState(entry)
+  const [tagDraft, setTagDraft] = useState('')
   const [error, setError] = useState('')
 
   useEffect(() => setDraft(entry), [entry.id, entry.updatedAt])
+
+  /**
+   * 追加标签。
+   *
+   * ⚠️ 传全量 tagNames：updateEntry → attachEntryTagsByName 走的是**合并**语义
+   * （只加不摘），所以传全量与传增量结果一样 —— 但传全量是显式的，将来若改成
+   * 替换语义这里也不会突然丢掉原有标签。
+   */
+  const addTags = async () => {
+    const incoming = tagDraft
+      .split(/[,，\s]+/)
+      .map((item) => item.replace(/^#/, '').trim())
+      .filter(Boolean)
+    if (incoming.length === 0) return
+    const merged = [...new Set([...draft.tags.map((tag) => tag.name), ...incoming])]
+    setTagDraft('')
+    await patch({ tagNames: merged })
+  }
 
   const patch = async (changes: Partial<EntrySummary> & { tagNames?: string[] }) => {
     setError('')
@@ -100,11 +119,52 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
 
           <section>
             <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">标签</h3>
-            <div className="flex flex-wrap gap-1">
+            <div className="flex flex-wrap items-center gap-1">
               {draft.tags.map((tag) => (
-                <span key={tag.id} className="rounded-full bg-secondary px-2 py-0.5 text-[11px]">{tag.name}</span>
+                <span key={tag.id} className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-[11px]">
+                  {tag.name}
+                  <button
+                    type="button"
+                    title="摘掉这个标签"
+                    onClick={async () => {
+                      const response = await fetch(`/api/atlas/entries/${entry.id}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ detachTagId: tag.id }),
+                      })
+                      const body = await response.json()
+                      if (response.ok && body.success) {
+                        setDraft(body.data)
+                        onChange(body.data)
+                      }
+                    }}
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="size-2.5" />
+                  </button>
+                </span>
               ))}
-              {draft.tags.length === 0 && <span className="text-[11px] text-destructive">没打标签 —— 现在补，不然以后找不到</span>}
+            </div>
+            {/* ⚠️ 就地加签是「未打标」视图的配套：欠账摊开在这里补，
+                不该要求用户先回Quick Add 重录一遍。没有它，欠就永远欠着。 */}
+            <div className="mt-2 flex gap-2">
+              <Input
+                aria-label="加标签"
+                placeholder={draft.tags.length === 0 ? '没打标 —— 在这里补，或直接关掉' : '再加一个标签…'}
+                value={tagDraft}
+                onChange={(event) => setTagDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') return
+                  event.preventDefault()
+                  void addTags()
+                }}
+                className="h-7 text-xs"
+              />
+              {tagDraft.trim() && (
+                <Button size="xs" onClick={() => void addTags()}>
+                  加上
+                </Button>
+              )}
             </div>
           </section>
 

@@ -25,6 +25,8 @@ const DIMENSION_LABEL: Record<keyof typeof CONTROLLED_TAXONOMY, string> = {
 export type AtlasFilter = {
   status?: EntryStatus
   tags: string[]
+  /** 只看没打标签的条目。tags 不强制之后，这是补欠账的入口。 */
+  untagged: boolean
   q: string
 }
 
@@ -34,12 +36,14 @@ export function AtlasSidebar({
   filter,
   onFilter,
   counts,
+  untaggedCount,
 }: {
   entries: EntrySummary[]
   tags: Tag[]
   filter: AtlasFilter
   onFilter: (next: AtlasFilter) => void
   counts: Record<EntryStatus, number>
+  untaggedCount: number
 }) {
   const usage = useMemo(() => {
     const counted = new Map<string, number>()
@@ -48,7 +52,13 @@ export function AtlasSidebar({
   }, [entries])
 
   const toggleTag = (name: string) => {
-    onFilter({ ...filter, tags: filter.tags.includes(name) ? filter.tags.filter((item) => item !== name) : [...filter.tags, name] })
+    // ⚠️ 选了具体 tag 就退出「未打标」——两者互斥，后端也会拒，
+    // 但前端先切掉模式，免得用户点了还得到一句报错。
+    onFilter({
+      ...filter,
+      untagged: false,
+      tags: filter.tags.includes(name) ? filter.tags.filter((item) => item !== name) : [...filter.tags, name],
+    })
   }
 
   return (
@@ -57,7 +67,7 @@ export function AtlasSidebar({
         <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Collection</h2>
         <p className="mb-2 text-sm font-semibold">Monster</p>
         <div className="space-y-0.5">
-          <FilterRow label="全部" count={Object.values(counts).reduce((sum, n) => sum + n, 0)} active={!filter.status} onClick={() => onFilter({ ...filter, status: undefined })} />
+          <FilterRow label="全部" count={Object.values(counts).reduce((sum, n) => sum + n, 0)} active={!filter.status && !filter.untagged} onClick={() => onFilter({ ...filter, status: undefined, untagged: false })} />
           {(Object.keys(STATUS_LABEL) as EntryStatus[]).map((status) => (
             <FilterRow
               key={status}
@@ -67,7 +77,22 @@ export function AtlasSidebar({
               onClick={() => onFilter({ ...filter, status: filter.status === status ? undefined : status })}
             />
           ))}
+          <FilterRow
+            label="未打标"
+            count={untaggedCount}
+            active={filter.untagged}
+            onClick={() => onFilter({ ...filter, untagged: !filter.untagged, status: undefined })}
+          />
         </div>
+        {untaggedCount > 0 && !filter.untagged && (
+          <button
+            type="button"
+            onClick={() => onFilter({ ...filter, untagged: true, status: undefined })}
+            className="mt-1.5 w-full rounded-md bg-secondary/60 px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-secondary"
+          >
+            {untaggedCount} 条还没打标，去补 →
+          </button>
+        )}
       </section>
 
       {(Object.keys(CONTROLLED_TAXONOMY) as Array<keyof typeof CONTROLLED_TAXONOMY>).map((dimension) => (
@@ -159,8 +184,8 @@ export function FilterBar({ filter, onFilter, resultCount }: { filter: AtlasFilt
       )}
 
       <span className="ml-auto text-xs text-muted-foreground">{resultCount} 条</span>
-      {(filter.tags.length > 0 || filter.q || filter.status) && (
-        <Button variant="ghost" size="sm" onClick={() => onFilter({ tags: [], q: '' })}>
+      {(filter.tags.length > 0 || filter.q || filter.status || filter.untagged) && (
+        <Button variant="ghost" size="sm" onClick={() => onFilter({ tags: [], q: '', untagged: false })}>
           清空筛选
         </Button>
       )}
