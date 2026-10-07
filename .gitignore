@@ -27,3 +27,17 @@ local-*.db.commit
 .env.local
 next-env.d.ts
 tsconfig.tsbuildinfo
+
+# ⚠️ 数据不进仓库（2026-10-07）
+#
+# 数据库现在默认在 ~/.local/share/creative-atlas/atlas.db，但旧的 local.db
+# 可能还在项目里（迁移只复制不删），而它**在本机根本写不了**（工作区内的
+# SQLite 写入被沙箱拦，表现为 `disk I/O error`）。别提交它。
+local.db
+local.db-journal
+local.db-wal
+local.db-shm
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

@@ -23,12 +23,6 @@
 
 ## 二、本机环境的坑
 
-### npm 源
-
-`.npmrc` 锁了 `registry.npmmirror.com`。**别删它。**
-
-本机全局 registry 指向一个需要 token 的内网镜像，而官方源在本机 SSL 验证失败（`curl` 返回 `000`）。不显式指定源会卡在重试里 —— 实测 49 分钟未完成。
-
 ### dev server 可能起不来
 
 `next dev` 与 `next build` 都可能报 `EPERM: operation not permitted, rename .../CURRENT.next -> .../CURRENT`（turbopack 重建 `.next` 缓存）。

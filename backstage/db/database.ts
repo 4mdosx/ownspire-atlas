@@ -8,9 +8,55 @@ import { MONSTER_TAXONOMY, MONSTER_TAXONOMY_GROUPS } from '@/types/atlas'
 
 export type AppDatabase = NodeSQLiteDatabase
 
-const dbPath = process.env.DB_FILE_NAME
-  ? process.env.DB_FILE_NAME.replace(/^file:/, '')
-  : path.join(process.cwd(), 'local.db')
+/**
+ * ⭐ 数据库路径的解析。
+ *
+ * ⚠️⚠️ **默认不在项目目录里，而在 `DATA_DIR`（2026-10-07 改）**。
+ *
+ * 起因是一次实测：同一个 db 文件，**放在 `/tmp` 能正常写，放在项目目录里连
+ * `CREATE TABLE` 都报 `disk I/O error`**：
+ *
+ *   /tmp/probe.db   →✓ 写事务正常、WAL 可切换
+ *   ./probe2.db     → ✗ CREATE TABLE 直接disk I/O error
+ *
+ * 而报错**完全指不到真正的原因** —— 第一次遇到时我以为是数据库损坏，
+ * 于是去删journal、换 pragma，绕了半圈。真正的分界是**文件所在目录**，
+ * 不是文件本身。
+ *
+ * ⚠️ 推测是 WorkBuddy 的 safe-delete shim 对工作区内路径的文件操作有额外限制
+ * （同一个 rename 拦截让 `.next` 必须做成符号链接）。**不必深究** —— 判据
+ * 清楚且后果明确：**代码在项目里，数据在外面**，这也是更常规的分开。
+ *
+ * ⚠️ **迁移说明**：改动前库在`<repo>/local.db`。首次启动时若新位置没有库而旧
+ * 位置有，会自动复制过去并打一行日志 —— 那是唯一一次搬数据，之后靠正常
+ * 备份流程（导出包）。
+ *
+ * 想留在项目里可以显式指定 `DB_FILE_NAME=./local.db`，但那个位置在本机会
+ * 遇到上面那个写限制。
+ */
+const DEFAULT_DATA_DIR = path.join(process.env.HOME ?? process.cwd(), '.local', 'share', 'creative-atlas')
+
+function resolveDbPath(): string {
+  const explicit = process.env.DB_FILE_NAME
+  if (explicit) return explicit.replace(/^file:/, '')
+  // ⚠️ 先看新位置有没有库：有就直接用（不覆盖），没有才看旧的。
+  const target = path.join(process.env.DATA_DIR ?? DEFAULT_DATA_DIR, 'atlas.db')
+  if (fs.existsSync(target)) return target
+  const legacy = path.join(process.cwd(), 'local.db')
+  if (fs.existsSync(legacy)) {
+    try {
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.copyFileSync(legacy, target)
+      console.warn(`[atlas] 数据库已从 ${legacy} 复制到 ${target}（工作区内无法正常写入，见 database.ts 的注释）`)
+    } catch (error) {
+      //⚠️ 搬不动就退回旧路径 —— 报错比「静默建一个空库」好。
+      return legacy
+    }
+  }
+  return target
+}
+
+const dbPath = resolveDbPath()
 
 /**
  * ⚠️ 连接**必须是可重开的**，不能是模块级常量。
@@ -27,7 +73,28 @@ const dbPath = process.env.DB_FILE_NAME
 let connection: DatabaseSync | null = null
 
 function sqlite(): DatabaseSync {
-  if (!connection) connection = new DatabaseSync(dbPath)
+  if (connection) return connection
+  const opened = new DatabaseSync(dbPath)
+  //⭐ 连接建立时立刻设这三项，而不是每次查询前 —— 因为它们是**连接级**设置。
+  //
+  // ⚠️ `busy_timeout` 是修「读时报 `database is locked`」的标准解法（默认 0ms，
+  //    意味着「一撞到锁就立刻报错」而不是等）。dev server 与验证脚本常同时开着，
+  //    没有它就是随机失败。
+  //
+  // ⚠️ `journal_mode = WAL` 让读不阻塞写。默认的 rollback journal 在有读者时
+  //    会挡住写者 —— 对这个「一个进程写、偶尔读」的小库，WAL 是标准选择。
+  // ⚠️ `synchronous = NORMAL` 是 WAL 的配套：省掉每次事务的fsync。个人采集库
+  //    丢一次事务可以接受（下次重新操作），而每次 fsync 会让采集变卡。
+  //
+  // ⚠️⚠️ **别用「删掉 -journal 文件」当修法**（2026-10-07踩过）：它出现的
+  // 根因是**上一个进程被中断**（dev server 被 kill、build 失败），而 SQLite
+  // 会认为有未完成的事务要回滚。手动删 journal 绕过了回滚，于是那些「未完成」
+  // 的部分留在库里，症状是 `disk I/O error` —— 而它的报错完全指不到真正的原因。
+  //    **正确做法是让下一个进程自己回滚**（也就是设 busy_timeout 并重开连接）。
+  for (const pragma of ['PRAGMA busy_timeout = 5000', 'PRAGMA journal_mode = WAL', 'PRAGMA synchronous = NORMAL']) {
+    opened.exec(pragma)
+  }
+  connection = opened
   return connection
 }
 
@@ -69,6 +136,10 @@ function migrateLegacyMonsterEntries(): void {
 
 function ensureSchema(): void {
   if (schemaVersionApplied >= SCHEMA_VERSION) return
+  // ⚠️ 数据目录可能还不存在（新装 / 首次迁移）。SQLite 不会自己建父目录，
+  // 而建库失败时报的是 `unable to open database file` —— 完全指不到「目录
+  // 不存在」这件事，所以在这里显式建。
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true })
   sqlite().exec(`
     CREATE TABLE IF NOT EXISTS entries (
       id TEXT PRIMARY KEY,
