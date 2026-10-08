@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { resolveMediaPath, mediaRoot } from '@/backstage/db/database'
-import type { DomainCode, EntryTag, MonsterExtension, TaxonomyDimensionKey } from '@/types/atlas'
+import type { DomainCode, EntryTag, MonsterExtension } from '@/types/atlas'
 
 /**
  * 导出包格式：JSON 清单 + media 目录。
@@ -12,37 +12,26 @@ import type { DomainCode, EntryTag, MonsterExtension, TaxonomyDimensionKey } fro
  * 包结构：
  * ```
  * atlas-export-20261006T154900Z/
- *   manifest.json      ← 条目 + tag + taxonomy + domain 扩展 + 导入机制所需信息
+ *   manifest.json      ← 条目 + tag + axisValues + domain 扩展 + 导入机制所需信息
  *   media/<relative>   ← 图片本体
  * ```
  *
- * ⚠️ **formatVersion 4**（v0.1 是 1，v0.2 是 2，v0.3 是 3）。相对 3 的改动：
- * · 新增 `scoresBySpace` —— **一个 entry 在全部设计空间下的坐标**
- * · 新增 `spaces` / `axes` —— 空间与坐标轴定义
- * · 删掉 `taxonomy`（单空间那份）—— 留着它会让人以为只有一组坐标，
- *   而那正是 v4 要消除的歧义
+ * formatVersion 6 carries `axisValuesBySpace`, `spaces`, `axes`, and tag confidence using only
+ * current field names. Older formats require explicit conversion.
  *
  * ⚠️ **为什么必须带上轴的定义**：坐标是 0–1 的浮点数，不带档位词的话
  * 换台机器导入就只剩「0.42」，而没人知道它代表「giant」还是「high mobility」。
  * 那样的导出包**看着成功、实则丢掉了全部语义**。
  *
- * ⚠️ 历史版本的兼容性：
- * · v1 → 报错（无 domain / taxonomy / tag 来源）
- * · v2 → 报错（notes 装着观察与判断的混合体，自动拆分只能靠猜）
- * · v3 → 报错（只有单空间坐标，导入进多空间模型会被当成「我的」那一组，
- *   静默丢掉原作与项目坐标 —— 那比报错糟得多）
- *
- * **不猜，不兼容就报错**是 v0.2 起的纪律，在这里第一次真正兑现：
- * 三个版本各自的原因不同，错误信息必须说清是哪一种。
+ * 导入只接受当前格式，避免在读入时猜测历史字段的含义。
  */
-export const EXPORT_FORMAT_VERSION = 4
+export const EXPORT_FORMAT_VERSION = 6
 
 export type ExportTag = {
   name: string
   origin: string
   ruleId: string
-  /** 命名空间（formatVersion 3 起）。空串 = 还没归类。 */
-  group: string
+  confidence: number
 }
 
 /** 设计空间（formatVersion 4 起）。⚠️ 用 code 而非 id 做身份。 */
@@ -81,18 +70,12 @@ export type ExportEntry = {
   /**
    * ⭐ 观察 —— 我看到了什么（客观）。
    *
-   * ⚠️ `notes` 保留在导出格式里，但**只作为读入端的兼容字段**：
-   * formatVersion 3 的包里不再有它，v3导入器会把它读进 observed；
-   * 导出 v3 时它恒为空。理由见docs/00-scope.md ——
-   * 「观察」和「判断」混在一个字段里，半年后无法分辨哪句是原作事实。
    */
   observed: string
   /** ⭐ 判断 —— 我认为它为什么成立（主观）。 */
   read: string
   /** ⭐ 我为什么留着它。 */
   worthwhileBecause: string
-  /** @deprecated 读入端兼容用；v3 导出恒为空串。 */
-  notes: string
   status: string
   createdAt: string
   updatedAt: string
@@ -106,7 +89,7 @@ export type ExportEntry = {
    * ⚠️ key 是空间 `code`（不是 id）：id 是本地数据，code 才是跨机器稳定的
    * 标识。用 id 的话，导出到另一台机器上就对不上了。
    */
-  scoresBySpace: Record<string, Record<string, number>>
+  axisValuesBySpace: Record<string, Record<string, number>>
   /** domain 专属结构化字段。非 monster 为 null。 */
   extension: MonsterExtension | null
 }
@@ -184,5 +167,5 @@ export function exportStamp(date = new Date()): string {
 
 /** EntryTag（service 层形态）→ ExportTag（落盘形态）。 */
 export function toExportTag(tag: EntryTag): ExportTag {
-  return { name: tag.name, origin: tag.origin, ruleId: tag.ruleId, group: tag.group }
+  return { name: tag.name, origin: tag.origin, ruleId: tag.ruleId, confidence: tag.confidence }
 }

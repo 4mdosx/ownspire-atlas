@@ -3,17 +3,10 @@ import { nanoid } from 'nanoid'
 import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { getDatabase } from '@/backstage/db/database'
 import { entries, entryTags, tags } from '@/backstage/db/schema'
-import { isTagGroupKey, type EntryTag, type Tag, type TagGroup, type TagOrigin } from '@/types/atlas'
+import { type EntryTag, type Tag, type TagOrigin } from '@/types/atlas'
 
-/**
- * db 行 → Tag。`groupName` 列在类型层叫 `group`。
- *
- * ⚠️ 用 as 断言而不是校验：groupName 是我们自己写进去的、且写之前过了
- * isTagGroupKey，脏值只可能来自手工改库。而这里抛错的代价是「整个标签
- * 列表打不开」—— 一个显示字段的值不值得这个。
- */
 function toTag(row: typeof tags.$inferSelect): Tag {
-  return { ...row, group: (isTagGroupKey(row.groupName) ? row.groupName : '') as TagGroup }
+  return row
 }
 
 /**
@@ -52,21 +45,14 @@ export async function findTagByName(name: string): Promise<Tag | null> {
   return hit ? toTag(hit) : null
 }
 
-/**
- * 建 tag，可选给一个命名空间。
- *
- * ⚠️ group 默认空 —— **归类不强制**。随手加一个 tag 不该被「必须先选组」
- * 拦住：那会让随手记变成一道手续，而随手记的频次远高于归类的需要。
- * 归类是给 Faceted Search 用的，欠着不影响找得到东西。
- */
-export async function createTag(name: string, group: TagGroup = ''): Promise<Tag> {
+export async function createTag(name: string): Promise<Tag> {
   const normalized = normalizeTagName(name)
   if (!normalized) throw new Error('标签不能为空')
   const db = await getDatabase()
   const now = new Date().toISOString()
-  const row: Tag = { id: `tag-${Date.now()}-${nanoid(6)}`, name: normalized, group, createdAt: now, updatedAt: now }
+  const row: Tag = { id: `tag-${Date.now()}-${nanoid(6)}`, name: normalized, createdAt: now, updatedAt: now }
   try {
-    await db.insert(tags).values({ ...row, groupName: group })
+    await db.insert(tags).values(row)
   } catch (error) {
     if (isUniqueError(error)) throw new Error('标签已存在')
     throw error
@@ -78,14 +64,11 @@ export async function createTag(name: string, group: TagGroup = ''): Promise<Tag
  * 找到就用，找不到就建 —— 采集时的打字量能省一分是一分。
  * 并发下靠 UNIQUE 约束兜住：撞了就当「别人刚建好」，重查一次。
  */
-export async function findOrCreateTag(name: string, group: TagGroup = ''): Promise<Tag> {
+export async function findOrCreateTag(name: string): Promise<Tag> {
   const existing = await findTagByName(name)
-  // ⚠️ 已存在的 tag **不覆盖 group**。group 是归类动作，导入包/批量操作
-  // 顺手改掉一个tag 的归类会让用户失去对命名空间的所有权 ——
-  // 归类应该由「我认为它属于哪类」这个显式动作驱动。
   if (existing) return existing
   try {
-    return await createTag(name, group)
+    return await createTag(name)
   } catch (error) {
     if (error instanceof Error && error.message === '标签已存在') {
       const again = await findTagByName(name)
@@ -136,10 +119,9 @@ export async function tagsForEntries(entryIds: string[]): Promise<Map<string, En
       entryId: entryTags.entryId,
       id: tags.id,
       name: tags.name,
-      // groupName 要带出来 —— 侧栏的 Faceted Search 按组分面靠它。
-      groupName: tags.groupName,
       origin: entryTags.origin,
       ruleId: entryTags.ruleId,
+      confidence: entryTags.confidence,
       createdAt: tags.createdAt,
       updatedAt: tags.updatedAt,
     })
@@ -152,9 +134,9 @@ export async function tagsForEntries(entryIds: string[]): Promise<Map<string, En
     list.push({
       id: row.id,
       name: row.name,
-      group: (isTagGroupKey(row.groupName) ? row.groupName : '') as TagGroup,
       origin: row.origin as TagOrigin,
       ruleId: row.ruleId,
+      confidence: row.confidence,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     })
@@ -190,10 +172,10 @@ export async function setEntryTags(entryId: string, tagIds: string[], includeSys
   // 否则系统 tag 会被静默降级成 user —— 那正是这个字段存在的理由，
   // 不能自己把它抹了。
   const existing = await db
-    .select({ tagId: entryTags.tagId, origin: entryTags.origin, ruleId: entryTags.ruleId })
+    .select({ tagId: entryTags.tagId, origin: entryTags.origin, ruleId: entryTags.ruleId, confidence: entryTags.confidence })
     .from(entryTags)
     .where(eq(entryTags.entryId, entryId))
-  const originByTag = new Map(existing.map((row) => [row.tagId, { origin: row.origin as TagOrigin, ruleId: row.ruleId }]))
+  const originByTag = new Map(existing.map((row) => [row.tagId, { origin: row.origin as TagOrigin, ruleId: row.ruleId, confidence: row.confidence }]))
 
   const now = new Date().toISOString()
   db.transaction((trx) => {
@@ -203,6 +185,7 @@ export async function setEntryTags(entryId: string, tagIds: string[], includeSys
       .run()
     for (const tagId of unique) {
       const preserved = originByTag.get(tagId)
+      if (!includeSystem && preserved?.origin === 'system') continue
       trx
         .insert(entryTags)
         .values({
@@ -210,6 +193,7 @@ export async function setEntryTags(entryId: string, tagIds: string[], includeSys
           tagId,
           origin: preserved?.origin ?? 'user',
           ruleId: preserved?.ruleId ?? '',
+          confidence: preserved?.confidence ?? 1,
           createdAt: now,
         })
         .run()
@@ -226,8 +210,6 @@ export async function setEntryTags(entryId: string, tagIds: string[], includeSys
 export async function attachEntryTagsByName(entryId: string, names: string[]): Promise<void> {
   const wanted = [...new Set(names.map(normalizeTagName).filter(Boolean))]
   if (wanted.length === 0) return
-  // ⚠️ 显式箭头，不写 wanted.map(findOrCreateTag) —— findOrCreateTag 的第二个
-  // 参数是 group，map 会把数组下标传进去（详见 entry.service.ts 里的同处注释）。
   const resolved = await Promise.all(wanted.map((name) => findOrCreateTag(name)))
   const current = (await tagsForEntries([entryId])).get(entryId) ?? []
   const merged = [...current.map((item) => item.id)]
@@ -253,14 +235,14 @@ export async function detachEntryTag(entryId: string, tagId: string): Promise<vo
  * ⚠️ ruleId 是这条 tag 的来源规则标识。系统 tag 按 ruleId 整批查、整批摘，
  * 是「一个项目背后通过 tag 实现」的可运维前提。
  */
-export async function attachSystemTag(entryId: string, name: string, ruleId: string, group: TagGroup = ''): Promise<void> {
+export async function attachSystemTag(entryId: string, name: string, ruleId: string): Promise<void> {
   if (!ruleId.trim()) throw new Error('系统 tag 必须带 ruleId —— 没有来源规则的系统 tag 无法追溯')
-  const tag = await findOrCreateTag(name, group)
+  const tag = await findOrCreateTag(name)
   const db = await getDatabase()
   const now = new Date().toISOString()
   await db
     .insert(entryTags)
-    .values({ entryId, tagId: tag.id, origin: 'system', ruleId: ruleId.trim(), createdAt: now })
+    .values({ entryId, tagId: tag.id, origin: 'system', ruleId: ruleId.trim(), confidence: 1, createdAt: now })
     .onConflictDoUpdate({ target: [entryTags.entryId, entryTags.tagId], set: { origin: 'system', ruleId: ruleId.trim() } })
 }
 
@@ -295,11 +277,8 @@ export async function detachSystemTagsByRule(ruleId: string): Promise<number> {
  * ⚠️ 只统计挂在条目上的 tag。tags 表里可能有从未被用过的 tag（建了没挂），
  * 那些正是要清理的对象，所以不能反过来从 tags 表出发数。
  *
- * ⚠️ `controlled` 字段保留但恒为 false —— v0.2 起 tag 没有白名单，
- * 「是否受控」不再是 tag 的属性（那是 taxonomy 的事）。
- * 保留字段是为了让现有 UI 调用点不用改。
  */
-export async function tagUsage(): Promise<Array<{ id: string; name: string; count: number; controlled: boolean }>> {
+export async function tagUsage(): Promise<Array<{ id: string; name: string; count: number }>> {
   const db = await getDatabase()
   const rows = await db
     .select({ id: tags.id, name: tags.name, entryId: entryTags.entryId })
@@ -309,26 +288,18 @@ export async function tagUsage(): Promise<Array<{ id: string; name: string; coun
     id: row.id,
     name: row.name,
     count: row.entryId ? 1 : 0,
-    controlled: false,
   }))
   return counted.sort((left, right) => right.count - left.count || left.name.localeCompare(right.name))
 }
-/**
- * 改tag 的命名空间。
- *
- * ⚠️ group 挂在 **tag 实体**上而不是 entry_tags 上 —— 归类是「这个词属于哪类」，
- * 是这个词的性质，与它挂在哪些条目上无关。所以改一次全局生效。
- * （这与 origin 挂在 entry_tags 上正好相反：origin 记的是「这条关联是谁加的」，
- * 同一个词在不同条目上可以有不同 origin。）
- *
- * ⚠️ 允许改回空串（取消归类）。强制归类会让随手记变成一道手续，
- * 而随手记的频次远高于归类的需要。
- */
-export async function setTagGroup(name: string, group: TagGroup): Promise<Tag> {
-  const tag = await findTagByName(name)
-  if (!tag) throw new Error('标签不存在')
+/** 修改单条 Entry 与 Tag 的关联置信度。 */
+export async function setEntryTagConfidence(entryId: string, tagId: string, confidence: number): Promise<void> {
+  if (typeof confidence !== 'number' || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+    throw new Error('标签置信度必须在 0–1 之间')
+  }
   const db = await getDatabase()
-  const now = new Date().toISOString()
-  await db.update(tags).set({ groupName: group, updatedAt: now }).where(eq(tags.id, tag.id))
-  return { ...tag, group, updatedAt: now }
+  const [association] = await db.select({ tagId: entryTags.tagId }).from(entryTags)
+    .where(and(eq(entryTags.entryId, entryId), eq(entryTags.tagId, tagId))).limit(1)
+  if (!association) throw new Error('条目与标签的关联不存在')
+  await db.update(entryTags).set({ confidence })
+    .where(and(eq(entryTags.entryId, entryId), eq(entryTags.tagId, tagId)))
 }

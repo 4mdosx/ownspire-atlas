@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { changeDomain, clearTaxonomyDimension, deleteEntry, getEntryDetail, setEntryStatus, updateEntry } from '@/backstage/atlas/entry.service'
-import { detachEntryTag } from '@/backstage/atlas/tag.service'
+import { changeDomain, clearAxisValue, deleteEntry, getEntryDetail, setEntryStatus, updateEntry } from '@/backstage/atlas/entry.service'
+import { detachEntryTag, setEntryTagConfidence } from '@/backstage/atlas/tag.service'
 import { isDomainCode } from '@/types/atlas'
 
 const message = (error: unknown) => (error instanceof Error ? error.message : 'Atlas 请求失败')
@@ -8,7 +8,7 @@ const message = (error: unknown) => (error instanceof Error ? error.message : 'A
 type Context = { params: Promise<{ id: string }> }
 
 /**
- * 详情要带 extension 与 taxonomy —— drawer 里要显示这些。
+ * 详情要带 extension 与 axisValues —— drawer 里要显示这些。
  *
  * ⚠️ `?spaceId=` 决定读**哪个设计空间**的坐标（2026-10-06）。一个 entry
  * 在「原作」与「我的」下各有一组独立坐标，而「原作」和「我的」记的是两个不同的
@@ -29,6 +29,13 @@ export async function PATCH(request: NextRequest, context: Context) {
     const { id } = await context.params
     const body = await request.json()
 
+    if (body.tagConfidence !== undefined) {
+      const value = body.tagConfidence
+      if (!value || typeof value !== 'object' || typeof value.tagId !== 'string') throw new Error('缺少 tagId')
+      await setEntryTagConfidence(id, value.tagId, value.confidence)
+      return NextResponse.json({ success: true, data: await getEntryDetail(id, String(body.spaceId ?? 'space-mine')) })
+    }
+
     // ⚠️ 换 domain 是独立动作，不能混在 updateEntry 里 —— updateEntry 的语义是
     // 「改这条的字段」，而换 domain 会换扩展表。做成 PATCH 的一个分支会让
     // 「哪些字段可以一起改」这件事变得不可预测。
@@ -42,8 +49,8 @@ export async function PATCH(request: NextRequest, context: Context) {
     // 清除某个维度 ——「没打分」和「打了 0 分」是两件事，所以要能单独删。
     // ⚠️ spaceId 必须一起传：不清掉它就等于在默认空间删，而用户可能正在
     // 「原作」视图里点清除 —— 那样会删掉错空间的那一行。
-    if (typeof body.clearDimension === 'string' && body.clearDimension) {
-      await clearTaxonomyDimension(id, body.clearDimension, String(body.spaceId ?? 'space-mine'))
+    if (typeof body.clearAxisKey === 'string' && body.clearAxisKey) {
+      await clearAxisValue(id, body.clearAxisKey, String(body.spaceId ?? 'space-mine'))
     }
 
     // ⚠️ 返回值也要跟着空间走：清除完之后直接把这个 body 返回给界面，
@@ -90,7 +97,7 @@ export async function POST(request: NextRequest, context: Context) {
     const tagId = String(body?.detachTagId ?? '').trim()
     if (!tagId) throw new Error('缺少 detachTagId')
     await detachEntryTag(id, tagId)
-    return NextResponse.json({ success: true, data: await getEntryDetail(id) })
+    return NextResponse.json({ success: true, data: await getEntryDetail(id, String(body.spaceId ?? 'space-mine')) })
   } catch (error) {
     return NextResponse.json({ success: false, error: message(error) }, { status: 400 })
   }

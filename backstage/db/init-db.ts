@@ -28,14 +28,14 @@ async function main() {
   console.log('表已就绪：')
   for (const row of tableRows) console.log(`  ${row.name}`)
 
-  const countRows = await db.all<{ entryCount: number; tagCount: number; taxonomyCount: number }>(sql`
+  const countRows = await db.all<{ entryCount: number; tagCount: number; axisValuesCount: number }>(sql`
     SELECT
       (SELECT count(*) FROM entries) AS entryCount,
       (SELECT count(*) FROM tags) AS tagCount,
-      (SELECT count(*) FROM entry_taxonomy) AS taxonomyCount
+      (SELECT count(*) FROM entry_axis_values) AS axisValuesCount
   `)
   const row = countRows[0]
-  console.log(`条目 ${row?.entryCount ?? 0} 条 · 标签 ${row?.tagCount ?? 0} 个 · 打分 ${row?.taxonomyCount ?? 0} 条`)
+  console.log(`条目 ${row?.entryCount ?? 0} 条 · 标签 ${row?.tagCount ?? 0} 个 · 打分 ${row?.axisValuesCount ?? 0} 条`)
 }
 
 main().catch((error) => {

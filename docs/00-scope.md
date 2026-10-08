@@ -1,5 +1,7 @@
 # 00 · 范围（v0 冻结 → v0.2 通用化 → 域收窄 → 架构原则）
 
+> 历史设计记录。当前运行中的字段和流程以仓库根目录 `README.md`、`types/atlas.ts` 及数据库 schema 为准。2026-10-08 已移除 Tag 分组和 `reference` 状态，新增 Entry–Tag `confidence` 与 `pending_ai` 状态。
+
 **写作日期** 2026-10-06 ｜ **状态** v0 冻结稿
 **改写日期** 2026-10-06 ｜ **状态** v0.2 通用化（§一 / §二 / §四 已改写，见下方改写记录）
 **同日第三次修订** ｜ **monster 域收窄为「形象设计」**（§四），并引入**多个设计
@@ -192,7 +194,7 @@ Entry {
   id
   domain              // 'monster' · ...
   name
-  status: 'inbox' | 'reviewed' | 'reference'
+  status: 'pending_ai' | 'inbox' | 'reviewed'
 
   // 来源
   sourceUrl?
@@ -305,6 +307,7 @@ tags:        id · name UNIQUE · createdAt · updatedAt
 entry_tags:  PK(entryId, tagId)
              origin: 'user' | 'system'
              ruleId?         ← 系统 tag 记来源规则，可整批追溯
+             confidence      ← 此条目与该 tag 的关联置信度，0–1
              createdAt
 ```
 
@@ -495,7 +498,9 @@ External Work → Observation → My Read → Design Space → Compare → Creat
 ⚠️ 旧 `notes` 列**保留不删**，但v3 起读写一律走 `observed`。迁移时**保守地全搬
 进 observed** —— 不猜用户哪些是判断，猜错比不猜贵。
 
-### ⭐⭐ tag 的四种参照系（2026-10-07 token 裁定）
+### 历史方案：tag 的四种参照系（已废弃）
+
+下面保留当时的设计推理供追溯。当前实现没有 `tags.groupName`、标签分组筛选或归类编辑。
 
 `tags.groupName` ∈ `motif | form | feature | device | taxonomy`，空串 = 未归类。
 

@@ -4,7 +4,7 @@
  * ⚠️ 为什么用脚本而不是 curl：本机沙箱拦了 Next 的 turbopack rename，
  * dev server 起不来（2026-10-06，换过 distDir 与沙箱模式都无效）。但 service 层
  * 是纯函数 + drizzle，tsx 直接跑得动 —— 要验的东西全在这一层：强制校验、
- * NOT EXISTS 语义、互斥拒绝、计数、补标签后消失、origin 隔离、taxonomy
+ * NOT EXISTS 语义、互斥拒绝、计数、补标签后消失、origin 隔离、axisValues
  * 星级映射、换 domain。路由那层只是转发。
  *
  * 用法：
@@ -24,16 +24,16 @@ import path from 'node:path'
 
 async function main(): Promise<void> {
   const stamp = Date.now()
-  process.env.DB_FILE_NAME = `file:/tmp/atlas-verify-${stamp}.db`
+  process.env.DB_FILE_NAME = `/tmp/atlas-verify-${stamp}.db`
   const mediaRoot = `/tmp/atlas-verify-media-${stamp}`
   process.env.MEDIA_ROOT = mediaRoot
 
   const service = await import('@/backstage/atlas/entry.service')
-  const { createEntry, listEntries, untaggedCount, statusCounts, updateEntry, changeDomain, setTaxonomy, clearTaxonomyDimension, getEntryDetail } = service
+  const { createEntry, listEntries, untaggedCount, statusCounts, updateEntry, changeDomain, setAxisValues, clearAxisValue, getEntryDetail, setEntryStatus } = service
   const tagService = await import('@/backstage/atlas/tag.service')
   const { attachEntryTagsByName, attachSystemTag, detachEntryTag, findTagByName, tagsForEntries, detachSystemTagsByRule } = tagService
   const atlas = await import('@/types/atlas')
-  const { scoreToStars, starsToScore, TAXONOMY_STEPS } = atlas
+  const { scoreToStars, starsToScore, AXIS_STEPS } = atlas
   const db = await import('@/backstage/db/database')
 
   const results: Array<{ name: string; ok: boolean; detail: string }> = []
@@ -97,7 +97,15 @@ async function main(): Promise<void> {
 
     check('findTagByName 大小写不敏感', (await findTagByName('BIRD')) !== null)
     check('未打标可与搜索叠加', (await listEntries({ untagged: true, q: '无标' })).length === 1)
-    check('状态计数正常', (await statusCounts()).inbox === 2, JSON.stringify(await statusCounts()))
+    check('手工新增先进入待 AI 处理', (await statusCounts()).pending_ai === 2, JSON.stringify(await statusCounts()))
+    await setEntryStatus(tagged.id, 'inbox')
+    check('待 AI 处理后可进入 Inbox', (await getEntryDetail(tagged.id)).status === 'inbox')
+    await setEntryStatus(tagged.id, 'reviewed')
+    check('Inbox 后可标为 Reviewed', (await getEntryDetail(tagged.id)).status === 'reviewed')
+    try {
+      await setEntryStatus(tagged.id, 'reference' as import('@/types/atlas').EntryStatus)
+      check('旧 Reference 状态应被拒', false)
+    } catch { check('旧 Reference 状态应被拒', true) }
   }
 
   console.log('\n— origin：系统 tag 与用户 tag 的边界 —')
@@ -134,12 +142,12 @@ async function main(): Promise<void> {
 
   // ③ 星级是**显示编码**，不是数据
   {
-    const { starsToScore, scoreToStars, TAXONOMY_STEPS } = atlas
+    const { starsToScore, scoreToStars, AXIS_STEPS } = atlas
     check('starsToScore(3)=0.6', Math.abs(starsToScore(3) - 0.6) < 1e-9, String(starsToScore(3)))
     check('往返一致（半星可点）', scoreToStars(starsToScore(2.5)) === 3, `2.5 星 → ${starsToScore(2.5)} → ${scoreToStars(starsToScore(2.5))} 星`)
     // ⚠️ 5 星 + 半星 = **6 个可点值**，不是 11 档。11 档对应 0.1 步进，
     // 那是滑杆的精度 —— 两个概念混了就会出现「11 个星星」的界面。
-    check('半星只给 6 个可点值（≠ 11 档）', TAXONOMY_STEPS.length === 6, `${TAXONOMY_STEPS.length} 档：${TAXONOMY_STEPS.join(' ')}`)
+    check('半星只给 6 个可点值（≠ 11 档）', AXIS_STEPS.length === 6, `${AXIS_STEPS.length} 档：${AXIS_STEPS.join(' ')}`)
   }
 
   console.log('\n— 坐标：sparse · 0 分与未打分的区别 —')
@@ -147,25 +155,25 @@ async function main(): Promise<void> {
   // ④ 「没打过分」≠「打了 0 分」—— **这是 sparse 表存在的全部理由**
   {
     const entry = await createEntry({ domain: creature, name: '打分测试', sourceUrl: src })
-    await setTaxonomy(entry.id, { visualMass: 0.8, shapeLanguage: 0.4 })
+    await setAxisValues(entry.id, { visualMass: 0.8, shapeLanguage: 0.4 })
     const detail = await getEntryDetail(entry.id)
-    check('taxonomy 只存给了的维度（sparse）', Object.keys(detail.taxonomy).length === 2, JSON.stringify(detail.taxonomy))
-    check('0.8 存进去还是 0.8', detail.taxonomy.visualMass === 0.8)
-    check('没打分的维度不出现在结果里', detail.taxonomy.familiarity === undefined)
+    check('axisValues 只存给了的维度（sparse）', Object.keys(detail.axisValues).length === 2, JSON.stringify(detail.axisValues))
+    check('0.8 存进去还是 0.8', detail.axisValues.visualMass === 0.8)
+    check('没打分的维度不出现在结果里', detail.axisValues.familiarity === undefined)
 
-    await setTaxonomy(entry.id, { threatAffinity: 0 })
+    await setAxisValues(entry.id, { threatAffinity: 0 })
     const withZero = await getEntryDetail(entry.id)
     check(
       '显式 0 分要与「没打过分」可区分',
-      withZero.taxonomy.threatAffinity === 0 && Object.keys(withZero.taxonomy).length === 3,
-      `${Object.keys(withZero.taxonomy).length} 个维度`,
+      withZero.axisValues.threatAffinity === 0 && Object.keys(withZero.axisValues).length === 3,
+      `${Object.keys(withZero.axisValues).length} 个维度`,
     )
 
-    await clearTaxonomyDimension(entry.id, 'shapeLanguage')
-    check('清除维度后只剩 2 个', Object.keys((await getEntryDetail(entry.id)).taxonomy).length === 2)
+    await clearAxisValue(entry.id, 'shapeLanguage')
+    check('清除维度后只剩 2 个', Object.keys((await getEntryDetail(entry.id)).axisValues).length === 2)
 
     try {
-      await setTaxonomy(entry.id, { nosuchdimension: 0.5 } as never)
+      await setAxisValues(entry.id, { nosuchdimension: 0.5 } as never)
       check('陌生维度应被拒绝', false, '居然没报错')
     } catch (error) {
       check('陌生维度应被拒绝', true, error instanceof Error ? error.message : '')
@@ -210,25 +218,22 @@ async function main(): Promise<void> {
   // ⚠️ 守的是**静默丢失**：渲染按 group 遍历维度，漏声明 group 的维度会在
   // 界面上整块消失而不报错。所以要验「不重不漏」，而不是逐个点名。
   {
-    const { dimensionsOf, groupsOf, dimensionsInGroup } = atlas
-    const all = dimensionsOf(creature)
-    const groupKeys = new Set(groupsOf(creature).map((group) => group.key))
+    const { listDesignAxes } = await import('@/backstage/atlas/space.service')
+    const all = await listDesignAxes('space-mine')
+    const groupKeys = new Set(all.map((axis) => axis.group.labelZh))
 
     check(
       '每个维度都有归属 group（漏声明 = 界面上整块消失）',
-      all.every((dimension) => groupKeys.has(dimension.group)),
-      all.filter((d) => !groupKeys.has(d.group)).map((d) => d.key).join(',') || '无孤儿',
+      all.every((axis) => axis.group.labelZh.length > 0 && groupKeys.has(axis.group.labelZh)),
+      all.filter((axis) => !axis.group.labelZh).map((axis) => axis.key).join(',') || '无孤儿',
     )
     check(
       '没有空 group',
-      groupsOf(creature).every((group) => dimensionsInGroup(creature, group.key).length > 0),
-      groupsOf(creature)
-        .filter((g) => dimensionsInGroup(creature, g.key).length === 0)
-        .map((g) => g.key)
-        .join(','),
+      groupKeys.size > 0,
+      [...groupKeys].join(','),
     )
 
-    const grouped = groupsOf(creature).flatMap((group) => [...dimensionsInGroup(creature, group.key)])
+    const grouped = [...groupKeys].flatMap((group) => all.filter((axis) => axis.group.labelZh === group))
     check(
       '分组不重不漏（分组是纯归类）',
       grouped.length === all.length && new Set(grouped.map((d) => d.key)).size === all.length,
@@ -251,15 +256,16 @@ async function main(): Promise<void> {
   // 逐个点名的代价是每加一根新轴都要改测试，而那会让人懒得加轴。
   {
     const retired = ['combat', 'role', 'form', 'palette', 'mobility']
-    const keys = new Set(atlas.dimensionsOf(creature).map((d: { key: string }) => d.key))
+    const { listDesignAxes } = await import('@/backstage/atlas/space.service')
+    const keys = new Set((await listDesignAxes('space-mine')).map((axis) => axis.key))
     const back = retired.filter((key) => keys.has(key))
     check('退役的五根轴都不该回来', back.length === 0, back.join(' '))
   }
 
   // 30. 档位 → score 映射（点档位词那条路径）
   {
-    const { MONSTER_TAXONOMY, anchorToScore, scoreToAnchor } = atlas
-    for (const dimension of MONSTER_TAXONOMY) {
+    const { CREATURE_AXIS_SEEDS, anchorToScore, scoreToAnchor } = atlas
+    for (const dimension of CREATURE_AXIS_SEEDS) {
       const scores = dimension.anchors.map((anchor) => anchorToScore(dimension, anchor)!)
       const ascending = scores.every((score, index) => index === 0 || score > scores[index - 1])
       check(`${dimension.key} 档位递增`, ascending, scores.map((s) => s.toFixed(2)).join(' '))
@@ -277,9 +283,10 @@ async function main(): Promise<void> {
 
   // 31. 不属于该 domain 的维度应被写入侧拒绝
   {
-    const { isDimensionOf } = atlas
-    check('visualMass 维度属于 creature', isDimensionOf(creature, 'visualMass'))
-    check('不存在的维度被拒', !isDimensionOf(creature, 'nope'))
+    const { listDesignAxes } = await import('@/backstage/atlas/space.service')
+    const keys = new Set((await listDesignAxes('space-mine')).map((axis) => axis.key))
+    check('visualMass 轴已在数据库定义', keys.has('visualMass'))
+    check('不存在的轴未定义', !keys.has('nope'))
   }
 
   // 32. ⭐ 观察与判断严格分离（2026-10-06）
@@ -314,15 +321,14 @@ async function main(): Promise<void> {
     check('改 read 不动 observed', afterRead.observed === '改过的观察', afterRead.observed)
     check('改 read 不动 worthwhileBecause', afterRead.worthwhileBecause === split.worthwhileBecause)
 
-    // 旧的 notes 调用方式应落到 observed（导入包兼容），而不是被丢弃
-    const legacy = await createEntry({
+    const direct = await createEntry({
       domain: creature,
-      name: '旧调用方',
-      sourceUrl: 'https://example.com/legacy',
-      notes: '通过 notes 传进来的内容',
+      name: '当前字段',
+      sourceUrl: 'https://example.com/direct',
+      observed: '只通过 observed 写入',
     })
-    check('notes 落到 observed', legacy.observed === '通过 notes 传进来的内容', legacy.observed)
-    check('notes 不落到 read', legacy.read === '', `read=${JSON.stringify(legacy.read)}`)
+    check('observed 直接写入', direct.observed === '只通过 observed 写入', direct.observed)
+    check('未写 read 保持空值', direct.read === '', `read=${JSON.stringify(direct.read)}`)
   }
 
   // 33. ⭐ 搜索要覆盖三个新字段（2026-10-06）
@@ -337,21 +343,20 @@ async function main(): Promise<void> {
     check('能搜到 worthwhileBecause', hitsWorth.length > 0, `${hitsWorth.length} 条`)
   }
 
-  // 34. ⭐ tag 的 group 命名空间（2026-10-06）
+  // 34. Tag 字典与单条关联的置信度
   {
     const { createTag, findTagByName, listTags } = tagService
-    const tagged = await createTag('animal:cat', 'motif')
-    check('建 tag 时带命名空间', tagged.group === 'motif', tagged.group)
+    const tagged = await createTag('animal:cat')
+    check('建 tag', tagged.name === 'animal:cat', tagged.name)
 
     const found = await findTagByName('animal:cat')
-    check('读出来的 tag 保留命名空间', found?.group === 'motif', String(found?.group))
+    check('读 tag', found?.id === tagged.id, String(found?.id))
 
-    // ⚠️ 未归类的 tag 必须能用 —— 归类不强制，随手记的频次远高于归类的需要
-    const ungrouped = await createTag('随手记的')
-    check('不传命名空间也能建 tag', ungrouped.group === '', JSON.stringify(ungrouped.group))
+    const another = await createTag('随手记的')
+    check('可以建其他 tag', another.name === '随手记的', another.name)
 
     const all = await listTags()
-    check('listTags 带命名空间', all.every((tag) => typeof tag.group === 'string'), `${all.length} 个 tag`)
+    check('listTags 只返回当前字段', all.every((tag) => !('group' in tag)), `${all.length} 个 tag`)
 
     // ⚠️ 同一个名字不能建两次（唯一约束），也不该被悄悄改组
     try {
@@ -361,22 +366,17 @@ async function main(): Promise<void> {
       check('重名 tag 应被拒', true, error instanceof Error ? error.message : '')
     }
 
-    // 改归类：能改、能改回空串
-    const { setTagGroup } = tagService
-    const regrouped = await setTagGroup('animal:cat', 'form')
-    check('改归类生效', regrouped.group === 'form', regrouped.group)
-    const reread = await findTagByName('animal:cat')
-    check('改归类持久化', reread?.group === 'form', String(reread?.group))
-
-    const cleared = await setTagGroup('animal:cat', '')
-    check('归类可取消', cleared.group === '', JSON.stringify(cleared.group))
-
+    const linked = await createEntry({ domain: creature, name: '置信度', sourceUrl: src, tagNames: ['animal:cat'] })
+    const { setEntryTagConfidence } = tagService
+    await setEntryTagConfidence(linked.id, tagged.id, 0.42)
+    check('关联置信度持久化', (await getEntryDetail(linked.id)).tags.find((tag) => tag.id === tagged.id)?.confidence === 0.42)
+    await updateEntry(linked.id, { tagNames: ['animal:cat', '随手记的'] })
+    const afterReplace = await getEntryDetail(linked.id)
+    check('替换标签保留旧置信度，新关联默认为 1', afterReplace.tags.find((tag) => tag.id === tagged.id)?.confidence === 0.42 && afterReplace.tags.find((tag) => tag.id === another.id)?.confidence === 1)
     try {
-      await setTagGroup('不存在的词', 'motif')
-      check('改不存在的 tag 应被拒', false, '居然没报错')
-    } catch (error) {
-      check('改不存在的 tag 应被拒', true, error instanceof Error ? error.message : '')
-    }
+      await setEntryTagConfidence(linked.id, tagged.id, 1.5)
+      check('非法置信度应被拒', false)
+    } catch { check('非法置信度应被拒', true) }
   }
 
   // 35. ⭐ 多设计空间的坐标读写
@@ -387,7 +387,7 @@ async function main(): Promise<void> {
   {
     const { listDesignSpaces, createDesignAxis, findSpaceByCode, listDesignAxes, createDesignSpace } =
       await import('@/backstage/atlas/space.service')
-    const { setTaxonomy, clearTaxonomyDimension, allScoresOf } = service
+    const { setAxisValues, clearAxisValue, allScoresOf } = service
 
     const spaces = await listDesignSpaces()
     const mine = spaces.find((s) => s.code === 'mine')!
@@ -406,31 +406,31 @@ async function main(): Promise<void> {
 
     const subject = await createEntry({ domain: creature, name: '同名轴测试', sourceUrl: 'https://example.com/dual' })
     const shared = 'visualMass'
-    await setTaxonomy(subject.id, { [shared]: 0.2 }, mine.id)
-    await setTaxonomy(subject.id, { [shared]: 0.8 }, source.id)
+    await setAxisValues(subject.id, { [shared]: 0.2 }, mine.id)
+    await setAxisValues(subject.id, { [shared]: 0.8 }, source.id)
 
     // ⭐ 三条断言就是这一组的全部意义
     const mineScores = await getEntryDetail(subject.id, mine.id)
     const sourceScores = await getEntryDetail(subject.id, source.id)
-    check('「我的」读到 0.2', mineScores.taxonomy[shared] === 0.2, String(mineScores.taxonomy[shared]))
-    check('「原作」读到 0.8', sourceScores.taxonomy[shared] === 0.8, String(sourceScores.taxonomy[shared]))
+    check('「我的」读到 0.2', mineScores.axisValues[shared] === 0.2, String(mineScores.axisValues[shared]))
+    check('「原作」读到 0.8', sourceScores.axisValues[shared] === 0.8, String(sourceScores.axisValues[shared]))
     check(
       '同名轴互不覆盖（这一组的核心）',
-      mineScores.taxonomy[shared] !== sourceScores.taxonomy[shared],
-      `我的=${String(mineScores.taxonomy[shared])} 原作=${String(sourceScores.taxonomy[shared])}`,
+      mineScores.axisValues[shared] !== sourceScores.axisValues[shared],
+      `我的=${String(mineScores.axisValues[shared])} 原作=${String(sourceScores.axisValues[shared])}`,
     )
 
     // 清除要按空间隔离 —— 否则在「原作」视图点清除会删掉「我的」那一行
-    await clearTaxonomyDimension(subject.id, shared, source.id)
+    await clearAxisValue(subject.id, shared, source.id)
     const afterClear = await getEntryDetail(subject.id, mine.id)
-    check('清「原作」不动「我的」', afterClear.taxonomy[shared] === 0.2, String(afterClear.taxonomy[shared]))
+    check('清「原作」不动「我的」', afterClear.axisValues[shared] === 0.2, String(afterClear.axisValues[shared]))
 
     // ⚠️ 非法输入必须被拒，而**不是因为外键约束报错** —— 错误信息要能指到
     // 「你传了个不存在的空间」。所以这里验的是被拒，不是崩了。
     const emptySpace = await createDesignSpace({ code: 'proj-empty', labelZh: '空项目空间' })
     const rejects: Array<[string, () => Promise<unknown>]> = [
-      ['不存在的空间', () => setTaxonomy(subject.id, { [shared]: 0.5 }, 'space-nope')],
-      ['往没有轴的空间写', () => setTaxonomy(subject.id, { anything: 0.5 }, emptySpace.id)],
+      ['不存在的空间', () => setAxisValues(subject.id, { [shared]: 0.5 }, 'space-nope')],
+      ['往没有轴的空间写', () => setAxisValues(subject.id, { anything: 0.5 }, emptySpace.id)],
       ['非法的空间 code', () => createDesignSpace({ code: '有中文', labelZh: '非法 code' })],
     ]
     for (const [label, run] of rejects) {
@@ -483,6 +483,24 @@ async function main(): Promise<void> {
 
     await updateEntry(machine.id, { analysisStatus: 'committed' })
     check('draft 可改成 committed（人确认过）', (await getEntryDetail(machine.id)).analysisStatus === 'committed')
+  }
+
+  // Current export format must carry every space and import idempotently.
+  {
+    const { exportAll, importFrom } = await import('@/backstage/atlas/import.service')
+    const { EXPORT_FORMAT_VERSION } = await import('@/backstage/atlas/export.service')
+    const exported = await exportAll()
+    const manifest = JSON.parse(fs.readFileSync(path.join(exported.root, 'manifest.json'), 'utf8')) as {
+      formatVersion: number
+      entries: Array<{ axisValuesBySpace: Record<string, Record<string, number>>; tags: Array<{ confidence: number }> }>
+    }
+    check('导出使用当前格式和 Axis 字段', manifest.formatVersion === EXPORT_FORMAT_VERSION && manifest.entries.every((entry) => !!entry.axisValuesBySpace))
+    check('导出包含标签关联置信度', manifest.entries.every((entry) => entry.tags.every((tag) => typeof tag.confidence === 'number')))
+    const first = await importFrom(exported.root)
+    const second = await importFrom(exported.root)
+    check('当前包导入不丢条目', first.created === exported.count, `${first.created}/${exported.count}`)
+    check('导入保留关联置信度', (await listEntries({})).filter((entry) => entry.tags.some((tag) => tag.confidence === 0.42)).length >= 2)
+    check('同一包重复导入不重复创建', second.created === 0 && second.reused === exported.count)
   }
 
   await db.closeDatabase()

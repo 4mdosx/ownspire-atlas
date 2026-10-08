@@ -3,29 +3,20 @@ import path from 'node:path'
 import { nanoid } from 'nanoid'
 import { and, asc, desc, eq, inArray, like, notExists, or, sql } from 'drizzle-orm'
 import { getDatabase } from '@/backstage/db/database'
-import { entries, entryTags, entryTaxonomy, importIdMap, monsterEntries, tags } from '@/backstage/db/schema'
+import { entries, entryTags, entryAxisValues, importIdMap, monsterEntries, tags } from '@/backstage/db/schema'
 import { attachEntryTagsByName, findOrCreateTag, tagsForEntries } from './tag.service'
 import { listDesignAxes, listDesignSpaces } from './space.service'
-import { ANALYSIS_STATUSES, ENTRY_STATUSES, isAnalysisStatus, isDomainCode, normalizeDomainCode, type AnalysisStatus, type DomainCode, type EntryDetail, type EntryStatus, type EntrySummary, type ImageSource, type MonsterExtension, type TagOrigin, type TaxonomyDimensionKey } from '@/types/atlas'
+import { ANALYSIS_STATUSES, ENTRY_STATUSES, isAnalysisStatus, isDomainCode, type AnalysisStatus, type DomainCode, type EntryDetail, type EntryStatus, type EntrySummary, type ImageSource, type MonsterExtension, type TagOrigin, type AxisKey } from '@/types/atlas'
 
 const MAX_NAME = 120
 const MAX_URL = 2000
 /** 观察与判断都要能写长 —— 但仍然有上限，防止误粘整篇文章进来。 */
 const MAX_TEXT = 8000
 
-function parseList(value: string): string[] {
-  try {
-    const parsed = JSON.parse(value) as unknown
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
-  } catch {
-    return []
-  }
-}
-
 function mapEntry(
   row: typeof entries.$inferSelect,
   tagList: EntrySummary['tags'],
-  taxonomy: EntrySummary['taxonomy'],
+  axisValues: EntrySummary['axisValues'],
 ): EntrySummary {
   return {
     ...row,
@@ -37,11 +28,8 @@ function mapEntry(
     // 保守的方向是「先不进筛选」，而草稿值不该被当成已确认。
     analysisStatus: ANALYSIS_STATUSES.includes(row.analysisStatus as AnalysisStatus) ? (row.analysisStatus as AnalysisStatus) : 'draft',
     imageSource: row.imageSource as ImageSource,
-    // ⚠️ `notes` 是已废弃的别名。读的时候 observed 优先，为空才回退到 notes ——
-    // 这样即使有行是补列之前写的、observed 还是空，界面也不会突然空掉。
-    observed: row.observed || row.notes || '',
     tags: tagList,
-    taxonomy,
+    axisValues,
   }
 }
 
@@ -62,12 +50,8 @@ function assertAnalysisStatus(value: unknown): AnalysisStatus {
 
 function assertDomain(value: unknown): DomainCode {
   const raw = String(value ?? '').trim()
-  // ⚠️ 走归一化：`monster` 已被改名 `creature`（2026-10-07），而旧库里的
-  // entries.domain 与旧导出包里还是旧值。**认旧名、返回新名** ——
-  // 改的是「我们怎么称呼它」，不是「历史数据变成非法」。
-  const code = normalizeDomainCode(raw)
-  if (!isDomainCode(code)) throw new Error(`未知的采集类型：${raw || '空'}`)
-  return code
+  if (!isDomainCode(raw)) throw new Error(`未知的采集类型：${raw || '空'}`)
+  return raw
 }
 
 /** 来源必须只给 http/https —— 这个字段是强制的，所以要在写入口就挡住非法值。 */
@@ -112,11 +96,6 @@ function assertImagePath(value: unknown): string {
   return raw
 }
 
-function clipList(value: unknown, maxItems = 12): string[] {
-  const list = Array.isArray(value) ? value : typeof value === 'string' && value ? parseList(value) : []
-  return [...new Set(list.map((item) => clip(item, 40)).filter(Boolean))].slice(0, maxItems)
-}
-
 export type CreateEntryInput = {
   domain: DomainCode
   name?: string
@@ -133,8 +112,6 @@ export type CreateEntryInput = {
   read?: string
   /** 我为什么留着它。 */
   worthwhileBecause?: string
-  /** @deprecated 合并到 observed。仅保留供旧调用方与导入包兼容。 */
-  notes?: string
   status?: EntryStatus
   /**
    * ⭐ 分析确定度（2026-10-07）。默认 `committed`。
@@ -146,9 +123,9 @@ export type CreateEntryInput = {
   analysisStatus?: AnalysisStatus
   tagNames?: string[]
   /** 部分 Record，只写打过的维度。没给的维度不入库。 */
-  taxonomy?: Partial<Record<string, number>>
+  axisValues?: Partial<Record<string, number>>
   /** ⭐ 坐标写到哪个空间。默认「我的」。 */
-  taxonomySpaceId?: string
+  axisSpaceId?: string
   /** monster 专属结构化字段。 */
   extension?: Partial<Omit<MonsterExtension, 'entryId'>>
 }
@@ -156,7 +133,7 @@ export type CreateEntryInput = {
 export type UpdateEntryInput = Partial<Omit<CreateEntryInput, 'imagePath' | 'domain'>> & {
   imagePath?: string
   /**
-   * ⚠️ 改 domain 是**换库**不是改字段 —— 扩展表会跟着换，taxonomy 维度集合
+   * ⚠️ 改 domain 是**换库**不是改字段 —— 扩展表会跟着换，axisValues 维度集合
    * 也会换。所以它不在 UpdateEntryInput 里，要单独调changeDomain。
    */
 }
@@ -173,37 +150,24 @@ export type UpdateEntryInput = Partial<Omit<CreateEntryInput, 'imagePath' | 'dom
  * 坐标混在一起返回 —— 卡片上那个小圆点是「我评过几条轴」，把原作的分数算
  * 进去会让「我到底评没评过」变得不可答。
  */
-async function taxonomyForEntries(
+async function axisValuesForEntries(
   ids: string[],
-  readSpaceId?: string,
-): Promise<Map<string, Partial<Record<TaxonomyDimensionKey, number>>>> {
-  const map = new Map<string, Partial<Record<TaxonomyDimensionKey, number>>>()
+  readSpaceId: string,
+): Promise<Map<string, Partial<Record<AxisKey, number>>>> {
+  const map = new Map<string, Partial<Record<AxisKey, number>>>()
   if (ids.length === 0) return map
   const db = await getDatabase()
-  // ⚠️ 传了 readSpaceId 就只取那个空间；没传就**全部取回并合并** ——
-  // 合并只在调用方明确要「跨空间总览」时才对，列表页走的是带 spaceId 的路径。
-  const rows = readSpaceId
-    ? await db
-        .select({
-          entryId: entryTaxonomy.entryId,
-          spaceId: entryTaxonomy.spaceId,
-          dimensionKey: entryTaxonomy.dimensionKey,
-          score: entryTaxonomy.score,
-        })
-        .from(entryTaxonomy)
-        .where(and(inArray(entryTaxonomy.entryId, ids), eq(entryTaxonomy.spaceId, readSpaceId)))
-    : await db
-        .select({
-          entryId: entryTaxonomy.entryId,
-          spaceId: entryTaxonomy.spaceId,
-          dimensionKey: entryTaxonomy.dimensionKey,
-          score: entryTaxonomy.score,
-        })
-        .from(entryTaxonomy)
-        .where(inArray(entryTaxonomy.entryId, ids))
+  const rows = await db
+    .select({
+      entryId: entryAxisValues.entryId,
+      axisKey: entryAxisValues.axisKey,
+      value: entryAxisValues.value,
+    })
+    .from(entryAxisValues)
+    .where(and(inArray(entryAxisValues.entryId, ids), eq(entryAxisValues.spaceId, readSpaceId)))
   for (const row of rows) {
     const bucket = map.get(row.entryId) ?? {}
-    bucket[row.dimensionKey as TaxonomyDimensionKey] = row.score
+    bucket[row.axisKey as AxisKey] = row.value
     map.set(row.entryId, bucket)
   }
   return map
@@ -221,9 +185,9 @@ export async function allScoresOf(entryId: string): Promise<Record<string, Recor
   const db = await getDatabase()
   const [rows, spaces] = await Promise.all([
     db
-      .select({ spaceId: entryTaxonomy.spaceId, dimensionKey: entryTaxonomy.dimensionKey, score: entryTaxonomy.score })
-      .from(entryTaxonomy)
-      .where(eq(entryTaxonomy.entryId, entryId)),
+      .select({ spaceId: entryAxisValues.spaceId, axisKey: entryAxisValues.axisKey, value: entryAxisValues.value })
+      .from(entryAxisValues)
+      .where(eq(entryAxisValues.entryId, entryId)),
     listDesignSpaces(),
   ])
   const codeOf = new Map(spaces.map((space) => [space.id, space.code]))
@@ -234,21 +198,21 @@ export async function allScoresOf(entryId: string): Promise<Record<string, Recor
     const code = codeOf.get(row.spaceId)
     if (!code) continue
     const bucket = result[code] ?? {}
-    bucket[row.dimensionKey] = row.score
+    bucket[row.axisKey] = row.value
     result[code] = bucket
   }
   return result
 }
 
 /** 某个 entry 在指定空间下的全部坐标。详情页切空间时用它。 */
-export async function taxonomyOfSpace(entryId: string, spaceId: string): Promise<Partial<Record<string, number>>> {
+export async function axisValuesOfSpace(entryId: string, spaceId: string): Promise<Partial<Record<string, number>>> {
   const db = await getDatabase()
   const rows = await db
-    .select({ dimensionKey: entryTaxonomy.dimensionKey, score: entryTaxonomy.score })
-    .from(entryTaxonomy)
-    .where(and(eq(entryTaxonomy.entryId, entryId), eq(entryTaxonomy.spaceId, spaceId)))
+    .select({ axisKey: entryAxisValues.axisKey, value: entryAxisValues.value })
+    .from(entryAxisValues)
+    .where(and(eq(entryAxisValues.entryId, entryId), eq(entryAxisValues.spaceId, spaceId)))
   const result: Record<string, number> = {}
-  for (const row of rows) result[row.dimensionKey] = row.score
+  for (const row of rows) result[row.axisKey] = row.value
   return result
 }
 
@@ -257,7 +221,7 @@ export async function getEntryDetail(id: string, spaceId = 'space-mine'): Promis
   const [row] = await db.select().from(entries).where(eq(entries.id, id)).limit(1)
   if (!row) throw new Error('条目不存在')
 
-  const [tagMap, taxonomyMap] = await Promise.all([tagsForEntries([id]), taxonomyForEntries([id], spaceId)])
+  const [tagMap, axisValuesMap] = await Promise.all([tagsForEntries([id]), axisValuesForEntries([id], spaceId)])
 
   /**
    * domain 扩展行。2026-10-06 起 monster 域的扩展表**只剩 entryId**
@@ -265,7 +229,7 @@ export async function getEntryDetail(id: string, spaceId = 'space-mine'): Promis
    * 属于 monster 库」，不再拼任何结构化内容。
    *
    * ⚠️ 保留这一层的意义是**分流标记**：将来 monster 真的需要某个
-   * 「taxonomy 与自由文本都表达不了」的字段时，扩展行就是它的落点。
+   * 「axisValues 与自由文本都表达不了」的字段时，扩展行就是它的落点。
    */
   let extension: MonsterExtension | null = null
   if (row.domain === 'creature') {
@@ -274,13 +238,13 @@ export async function getEntryDetail(id: string, spaceId = 'space-mine'): Promis
   }
 
   return {
-    ...mapEntry(row, tagMap.get(id) ?? [], taxonomyMap.get(id) ?? {}),
+    ...mapEntry(row, tagMap.get(id) ?? [], axisValuesMap.get(id) ?? {}),
     extension,
   }
 }
 
-/** 兼容旧调用点：拿详情但只要摘要字段。 */
-export async function getEntry(id: string): Promise<EntrySummary> {
+/** Read the summary shape used by service mutations. */
+async function getEntrySummary(id: string): Promise<EntrySummary> {
   const { extension: _extension, ...summary } = await getEntryDetail(id)
   return summary
 }
@@ -297,7 +261,7 @@ export type ListFilter = {
   ruleId?: string
   /** 只看没有任何标签的条目（tags 不强制，靠这个视图补欠账）。 */
   untagged?: boolean
-  /** 搜 name 与 notes。 */
+  /** 搜条目名称与当前观察、判断字段。 */
   q?: string
   /**
    * ⭐ 读哪个空间的坐标（2026-10-06）。默认「我的」。
@@ -313,7 +277,7 @@ export type ListFilter = {
  * 列表查询。
  *
  * ⚠️ 全部只查 entries 一张表 —— Catalog 跨 domain 不需要 join 扩展表。
- * 卡片上要显示的 taxonomy 走单独一次 inArray 批量读，那也是通用表的查询。
+ * 卡片上要显示的 axisValues 走单独一次 inArray 批量读，那也是通用表的查询。
  *
  * ⚠️ tag筛选走子查询而不是 join 后group —— join 后去重会把不带 tag 的条目
  * 一起吞掉（INNER JOIN 的经典坑）。AND 语义用 `IN (子查询)` 表达，
@@ -370,9 +334,6 @@ export async function listEntries(filter: ListFilter = {}): Promise<EntrySummary
 
   if (filter.q?.trim()) {
     const needle = `%${filter.q.trim()}%`
-    // ⚠️ 搜 observed / read / worthwhileBecause 三个字段，不搜 notes ——
-    // notes 是已退休的别名，搜它等于让旧内容以「搜索命中」的形式复活，
-    // 而用户以为搜的是新字段。
     conditions.push(
       or(
         like(entries.name, needle),
@@ -400,11 +361,11 @@ export async function listEntries(filter: ListFilter = {}): Promise<EntrySummary
   const ids = rows.map((row) => row.id)
   // ⚠️ 列表只读「我的」空间的坐标。卡片上那个小圆点是「我评过几条轴」，
   // 混进原作的分数会让「我到底评过没有」变得不可答。
-  const [tagMap, taxonomyMap] = await Promise.all([
+  const [tagMap, axisValuesMap] = await Promise.all([
     tagsForEntries(ids),
-    taxonomyForEntries(ids, filter.spaceId ?? 'space-mine'),
+    axisValuesForEntries(ids, filter.spaceId ?? 'space-mine'),
   ])
-  return rows.map((row) => mapEntry(row, tagMap.get(row.id) ?? [], taxonomyMap.get(row.id) ?? {}))
+  return rows.map((row) => mapEntry(row, tagMap.get(row.id) ?? [], axisValuesMap.get(row.id) ?? {}))
 }
 
 export async function countEntries(filter: ListFilter = {}): Promise<number> {
@@ -417,7 +378,7 @@ export async function countEntries(filter: ListFilter = {}): Promise<number> {
  * 采集入口。
  *
  * ⚠️ 强制字段只剩一项：sourceUrl。imagePath 从 v0.2 起可空 —— 通用化后
- * 必然有不以图为中心的采集类型。tags 与 taxonomy **都不强制**。
+ * 必然有不以图为中心的采集类型。tags 与 axisValues **都不强制**。
  *
  * 这是 2026-10-06 的裁定：tag 强制会把「先存下来、标签回头补」变成
  * 「先想好再存」—— 那正是 v0 要消除的摩擦。
@@ -448,12 +409,10 @@ export async function createEntry(input: CreateEntryInput): Promise<EntrySummary
     imagePath,
     imageSource: input.imageSource === 'paste' ? 'paste' : 'file',
     originalName: clip(input.originalName, MAX_NAME),
-    // ⚠️ observed 同时接受 notes 是为了兼容旧调用方（导入包、脚本）。
-    // observed 优先 —— 两者都给时以 observed 为准，不做合并。
-    observed: clip(input.observed ?? input.notes, MAX_TEXT),
+    observed: clip(input.observed, MAX_TEXT),
     read: clip(input.read, MAX_TEXT),
     worthwhileBecause: clip(input.worthwhileBecause, MAX_TEXT),
-    status: input.status ? assertStatus(input.status) : 'inbox',
+    status: input.status ? assertStatus(input.status) : 'pending_ai',
     // ⚠️ 默认 committed —— v0 全是手工填的，没人确认等于已确认。
     analysisStatus: input.analysisStatus ? assertAnalysisStatus(input.analysisStatus) : 'committed',
     createdAt: now,
@@ -467,8 +426,8 @@ export async function createEntry(input: CreateEntryInput): Promise<EntrySummary
   // attachEntryTagsByName 是「只加不删」的合并语义 —— 它内部调
   // setEntryTags 时只替换 user 那一批，系统 tag 原样保留。
   await attachEntryTagsByName(id, tagNames)
-  await setTaxonomy(id, input.taxonomy ?? {}, input.taxonomySpaceId ?? 'space-mine')
-  return getEntry(id)
+  await setAxisValues(id, input.axisValues ?? {}, input.axisSpaceId ?? 'space-mine')
+  return getEntrySummary(id)
 }
 
 export async function updateEntry(id: string, input: UpdateEntryInput): Promise<EntrySummary> {
@@ -483,16 +442,7 @@ export async function updateEntry(id: string, input: UpdateEntryInput): Promise<
   if (input.imagePath !== undefined) updates.imagePath = assertImagePath(input.imagePath)
   if (input.imageSource !== undefined) updates.imageSource = input.imageSource === 'paste' ? 'paste' : 'file'
   if (input.originalName !== undefined) updates.originalName = clip(input.originalName, MAX_NAME)
-  // ⚠️ 改 observed 时同步清掉 notes —— 那个别名留着旧值会导致下次读时
-  // 出现「我明明改了却没变」的错觉（读的是 observed，但界面对比的是 notes）。
-  if (input.observed !== undefined) {
-    updates.observed = clip(input.observed, MAX_TEXT)
-    updates.notes = ''
-  } else if (input.notes !== undefined) {
-    // 旧调用方（导入包）传notes：走 observed，让别名自然退休。
-    updates.observed = clip(input.notes, MAX_TEXT)
-    updates.notes = ''
-  }
+  if (input.observed !== undefined) updates.observed = clip(input.observed, MAX_TEXT)
   if (input.read !== undefined) updates.read = clip(input.read, MAX_TEXT)
   if (input.worthwhileBecause !== undefined) updates.worthwhileBecause = clip(input.worthwhileBecause, MAX_TEXT)
   if (input.status !== undefined) updates.status = assertStatus(input.status)
@@ -511,56 +461,52 @@ export async function updateEntry(id: string, input: UpdateEntryInput): Promise<
     // 必须原样保留，否则用户改一次标签就把「这条属于哪个项目」的标记抹了。
     // 那正是 origin 存在的全部理由（验证脚本第 13 项抓到的真bug）。
     const names = [...new Set(input.tagNames.map((item) => clip(item, 40)).filter(Boolean))]
-    // ⚠️ **不能写names.map(findOrCreateTag)** —— findOrCreateTag 第二个参数
-    // 是 group，而 map 会把数组下标当第二个参数传进去，于是第一个 tag 拿到
-    // group=0、第二个 1……。类型检查会拦住（index 不是 TagGroup），
-    // 但一旦 findOrCreateTag 的签名变了（比如多一个参数）就会静默复发。
-    // 显式包一层箭头函数，语义与签名解耦。
     const resolved = await Promise.all(names.map((name) => findOrCreateTag(name)))
     const now = new Date().toISOString()
     const existing = await db
-      .select({ tagId: entryTags.tagId, origin: entryTags.origin, ruleId: entryTags.ruleId })
+      .select({ tagId: entryTags.tagId, origin: entryTags.origin, ruleId: entryTags.ruleId, confidence: entryTags.confidence })
       .from(entryTags)
       .where(eq(entryTags.entryId, id))
-    const preserved = new Map(existing.map((row) => [row.tagId, { origin: row.origin as TagOrigin, ruleId: row.ruleId }]))
+    const preserved = new Map(existing.map((row) => [row.tagId, { origin: row.origin as TagOrigin, ruleId: row.ruleId, confidence: row.confidence }]))
     db.transaction((trx) => {
       trx.delete(entryTags).where(and(eq(entryTags.entryId, id), eq(entryTags.origin, 'user'))).run()
       for (const tag of resolved) {
         const prior = preserved.get(tag.id)
+        if (prior?.origin === 'system') continue
         trx
           .insert(entryTags)
-          .values({ entryId: id, tagId: tag.id, origin: prior?.origin ?? 'user', ruleId: prior?.ruleId ?? '', createdAt: now })
+          .values({ entryId: id, tagId: tag.id, origin: prior?.origin ?? 'user', ruleId: prior?.ruleId ?? '', confidence: prior?.confidence ?? 1, createdAt: now })
           .run()
       }
     })
   }
 
-  if (input.taxonomy !== undefined) await setTaxonomy(id, input.taxonomy, input.taxonomySpaceId ?? 'space-mine')
+  if (input.axisValues !== undefined) await setAxisValues(id, input.axisValues, input.axisSpaceId ?? 'space-mine')
 
   // ⚠️ **extension 现在不承载任何数据**（2026-10-06 域收窄后monster 扩展表
   // 只剩 entryId，见 db/schema.ts）。行为与动作观察写进 observed 自由文本。
-  // 这个分支留着的唯一理由是：将来真有「taxonomy 与自由文本都表达不了」的
+  // 这个分支留着的唯一理由是：将来真有「axisValues 与自由文本都表达不了」的
   // 字段时，扩展行就是它的落点 —— 而那时不需要重新加一层分流机制。
 
-  return getEntry(id)
+  return getEntrySummary(id)
 }
 
 /**
- * ⭐ 写 taxonomy。
+ * ⭐ 写 axisValues。
  *
  * ⚠️ **维度必须属于该 domain 的定义集** —— 写进去之前挡住，别等读取时才发现
  * 有一个这个 domain 不认识的维度混在数据里。这是「维度定义进代码」带来的
  * 唯一好处：合法性在写入侧就能判。
  *
- * ⚠️ **没给的维度不动** —— 不是清零。taxonomy 是 sparse 的：只打过分的维度
+ * ⚠️ **没给的维度不动** —— 不是清零。axisValues 是 sparse 的：只打过分的维度
  * 才有行。整份替换会毁掉用户没碰过的部分。
  */
-export async function setTaxonomy(
+export async function setAxisValues(
   id: string,
-  taxonomy: Partial<Record<string, number>>,
+  axisValues: Partial<Record<string, number>>,
   spaceId = 'space-mine',
 ): Promise<void> {
-  await getEntry(id)
+  await getEntrySummary(id)
   // ⚠️ **合法性按空间校验**，不再按 domain —— 维度定义在 `design_axes` 里，
   // 一个空间有哪些轴与 domain 无关（「原作」空间是空的，任何 entry 都能往里写，
   // 但不能往里写一个它没有的维度）。
@@ -570,7 +516,7 @@ export async function setTaxonomy(
   const db = await getDatabase()
   const now = new Date().toISOString()
 
-  const rows = Object.entries(taxonomy).filter(([key, value]) => {
+  const rows = Object.entries(axisValues).filter(([key, value]) => {
     if (!allowed.has(key)) throw new Error(`这个空间没有「${key}」这个维度`)
     return typeof value === 'number' && !Number.isNaN(value)
   }) as Array<[string, number]>
@@ -580,15 +526,15 @@ export async function setTaxonomy(
     for (const [key, value] of rows) {
       const score = Math.min(1, Math.max(0, Math.round(value * 100) / 100))
       trx
-        .insert(entryTaxonomy)
-        .values({ entryId: id, spaceId, dimensionKey: key, score, setAt: now, updatedAt: now })
+        .insert(entryAxisValues)
+        .values({ entryId: id, spaceId, axisKey: key, value: score, setAt: now, updatedAt: now })
         // ⚠️ onConflict 的 target 必须是**新的三列主键**，否则 upsert 会按老的
         // 二列主键去匹配 —— 结果是「原作的移动性」被当成「我的移动性」覆盖掉。
         // 少写一个列的后果不是报错，而是数据静默丢失。
         // setAt 也更新：改分意味着「我对这条的判断变了」，时间戳要跟着走。
         .onConflictDoUpdate({
-          target: [entryTaxonomy.entryId, entryTaxonomy.spaceId, entryTaxonomy.dimensionKey],
-          set: { score, setAt: now, updatedAt: now },
+          target: [entryAxisValues.entryId, entryAxisValues.spaceId, entryAxisValues.axisKey],
+          set: { value: score, setAt: now, updatedAt: now },
         })
         .run()
     }
@@ -596,11 +542,11 @@ export async function setTaxonomy(
 }
 
 /** 清除某个空间下的某个维度 ——「这条我没打分」和「这条打了 0 分」是两件事。 */
-export async function clearTaxonomyDimension(id: string, dimensionKey: string, spaceId = 'space-mine'): Promise<void> {
+export async function clearAxisValue(id: string, axisKey: string, spaceId = 'space-mine'): Promise<void> {
   const db = await getDatabase()
   await db
-    .delete(entryTaxonomy)
-    .where(and(eq(entryTaxonomy.entryId, id), eq(entryTaxonomy.dimensionKey, dimensionKey), eq(entryTaxonomy.spaceId, spaceId)))
+    .delete(entryAxisValues)
+    .where(and(eq(entryAxisValues.entryId, id), eq(entryAxisValues.axisKey, axisKey), eq(entryAxisValues.spaceId, spaceId)))
 }
 
 /**
@@ -613,7 +559,7 @@ export async function setEntryStatus(id: string, status: EntryStatus): Promise<E
   const next = assertStatus(status)
   const db = await getDatabase()
   await db.update(entries).set({ status: next, updatedAt: new Date().toISOString() }).where(eq(entries.id, id))
-  return getEntry(id)
+  return getEntrySummary(id)
 }
 
 /**
@@ -629,7 +575,7 @@ export async function setEntryStatus(id: string, status: EntryStatus): Promise<E
 export async function changeDomain(id: string, nextDomain: DomainCode): Promise<EntrySummary> {
   const target = assertDomain(nextDomain)
   const current = await getEntryDetail(id)
-  if (current.domain === target) return getEntry(id)
+  if (current.domain === target) return getEntrySummary(id)
 
   const db = await getDatabase()
   const now = new Date().toISOString()
@@ -642,7 +588,7 @@ export async function changeDomain(id: string, nextDomain: DomainCode): Promise<
     }
   })
 
-  return getEntry(id)
+  return getEntrySummary(id)
 }
 
 /**
@@ -652,11 +598,11 @@ export async function changeDomain(id: string, nextDomain: DomainCode): Promise<
  * 清理孤儿图片是维护命令的事（`npm run gc-media`），不该在用户点删除时顺手做。
  */
 export async function deleteEntry(id: string): Promise<void> {
-  await getEntry(id)
+  await getEntrySummary(id)
   const db = await getDatabase()
   db.transaction((trx) => {
     trx.delete(entryTags).where(eq(entryTags.entryId, id)).run()
-    trx.delete(entryTaxonomy).where(eq(entryTaxonomy.entryId, id)).run()
+    trx.delete(entryAxisValues).where(eq(entryAxisValues.entryId, id)).run()
     trx.delete(monsterEntries).where(eq(monsterEntries.entryId, id)).run()
     trx.delete(entries).where(eq(entries.id, id)).run()
   })
@@ -670,7 +616,7 @@ export async function statusCounts(domain?: DomainCode): Promise<Record<EntrySta
     .from(entries)
     .where(domain ? eq(entries.domain, domain) : undefined)
     .groupBy(entries.status)
-  const counts: Record<EntryStatus, number> = { inbox: 0, reviewed: 0, reference: 0 }
+  const counts: Record<EntryStatus, number> = { pending_ai: 0, inbox: 0, reviewed: 0 }
   for (const row of rows) {
     if ((ENTRY_STATUSES as string[]).includes(row.status)) counts[row.status as EntryStatus] = row.count
   }
@@ -724,7 +670,7 @@ export async function entriesOrderedById(domain?: DomainCode): Promise<EntryDeta
   if (rows.length === 0) return []
 
   const ids = rows.map((row) => row.id)
-  const [tagMap, taxonomyMap] = await Promise.all([tagsForEntries(ids), taxonomyForEntries(ids)])
+  const [tagMap, axisValuesMap] = await Promise.all([tagsForEntries(ids), axisValuesForEntries(ids, 'space-mine')])
   const monsterIds = rows.filter((row) => row.domain === 'creature').map((row) => row.id)
 
   const extensionMap = new Map<string, MonsterExtension>()
@@ -737,7 +683,7 @@ export async function entriesOrderedById(domain?: DomainCode): Promise<EntryDeta
   }
 
   return rows.map((row) => ({
-    ...mapEntry(row, tagMap.get(row.id) ?? [], taxonomyMap.get(row.id) ?? {}),
+    ...mapEntry(row, tagMap.get(row.id) ?? [], axisValuesMap.get(row.id) ?? {}),
     extension: extensionMap.get(row.id) ?? null,
   }))
 }

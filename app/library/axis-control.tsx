@@ -9,12 +9,12 @@ import {
   scoreToAnchor,
   scoreToStars,
   starsToScore,
-  TAXONOMY_FINE_STEP,
-  TAXONOMY_STARS,
+  AXIS_FINE_STEP,
+  AXIS_STARS,
 } from '@/types/atlas'
 
 /**
- * ⭐ Taxonomy 度量控件。
+ * ⭐ AxisValues 度量控件。
  *
  * ⚠️ **星级是显示编码，不是数据。** 底层存 0–1 连续分。
  *
@@ -28,12 +28,12 @@ import {
  *
  * ⚠️ **没打过分的维度显示为全灰星，不是 0 分。** 「我没评过这条」
  * 和「我觉得它是 0 分」是两件事 —— 前者不该被后者污染。这也是
- * entry_taxonomy 要做 sparse 表的原因。
+ * entry_axis_values 要做 sparse 表的原因。
  */
 /**
  * ⭐ 一条坐标轴的最小形状。
  *
- * ⚠️ 刻意只声明用到的字段，而不是 `TaxonomyDimensionDef` 或 `DesignAxis`：
+ * ⚠️ 刻意只声明用到的字段，而不是 `AxisSeedDef` 或 `DesignAxis`：
  * 坐标轴现在有两种来源（代码里的种子定义、数据库里的 design_axes），
  * 而这两个组件只关心「名字 + 档位 + 提示」。写死具体类型会逼着渲染层
  * 为两种来源各写一个组件，而它们唯一的区别只有取数路径。
@@ -46,7 +46,7 @@ export type AxisLike = {
   anchors: readonly string[]
 }
 
-export function TaxonomyStars({
+export function AxisControl({
   dimension,
   value,
   onChange,
@@ -116,7 +116,7 @@ export function TaxonomyStars({
           aria-label={`${dimension.labelZh} ${dimension.labelEn}`}
           onMouseLeave={() => setHoverStar(null)}
         >
-          {Array.from({ length: TAXONOMY_STARS }, (_, index) => index + 1).map((target) => {
+          {Array.from({ length: AXIS_STARS }, (_, index) => index + 1).map((target) => {
             const full = star >= target
             const half = !full && star >= target - 0.5
             return (
@@ -150,7 +150,7 @@ export function TaxonomyStars({
           aria-label={`${dimension.labelZh} 精确值`}
           min={0}
           max={1}
-          step={TAXONOMY_FINE_STEP}
+          step={AXIS_FINE_STEP}
           value={shownScore !== undefined ? shownScore.toFixed(2) : ''}
           placeholder="—"
           onChange={(event) => {
@@ -176,7 +176,7 @@ export function TaxonomyStars({
  * ⚠️ 纵向排列（label 在上、控件在下）而不是横向挤一行 —— 抽屉加宽到能
  * 放下 6 个档位词之后，横向会把星级和数字框挤出视口。
  */
-export function TaxonomyRow({
+export function AxisRow({
   dimension,
   value,
   onChange,
@@ -202,7 +202,7 @@ export function TaxonomyRow({
           </span>
         )}
       </div>
-      <TaxonomyStars
+      <AxisControl
         dimension={dimension}
         value={value}
         onChange={onChange}

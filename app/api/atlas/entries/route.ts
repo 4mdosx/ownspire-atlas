@@ -43,7 +43,7 @@ export async function GET(request: NextRequest) {
 /**
  * 采集落库。
  *
- * ⚠️ 一次请求完成「取图 → 落盘 → 建条目 → 挂标签 → 写 taxonomy」五件事，
+ * ⚠️ 一次请求完成「取图 → 落盘 → 建条目 → 挂标签 → 写 axisValues」五件事，
  * 前端只需要一次往返。采集路径上每多一个来回就多一次放弃的机会。
  */
 export async function POST(request: NextRequest) {
@@ -58,10 +58,12 @@ export async function POST(request: NextRequest) {
       imagePath: body.imagePath,
       imageSource: body.imageSource as ImageSource,
       originalName: body.originalName,
-      notes: body.notes,
+      observed: body.observed,
+      read: body.read,
+      worthwhileBecause: body.worthwhileBecause,
       status: body.status,
       tagNames: Array.isArray(body.tagNames) ? body.tagNames : [],
-      taxonomy: body.taxonomy && typeof body.taxonomy === 'object' ? body.taxonomy : undefined,
+      axisValues: body.axisValues && typeof body.axisValues === 'object' ? body.axisValues : undefined,
       extension: body.extension && typeof body.extension === 'object' ? body.extension : undefined,
     })
     return NextResponse.json({ success: true, data: entry }, { status: 201 })

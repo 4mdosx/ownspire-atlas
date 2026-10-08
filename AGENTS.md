@@ -48,7 +48,7 @@ node --conditions react-server --import tsx scripts/verify-atlas.ts
 
 ## 三、schema 改动的门禁
 
-`backstage/db/database.ts` 的 `ensureSchema` 是幂等的，`SCHEMA_VERSION` 手动推进。
+`backstage/db/database.ts` 的 `ensureSchema` 只创建当前结构和首次种子。旧库结构必须先做显式、可验证的迁移；运行时不做兼容搬运。
 
 ⚠️ **破坏性 schema 变更的规则**：撞到 legacy 表且非空时**直接抛错，不自动搬数据**。
 
@@ -68,9 +68,9 @@ sqlite3 local.db "SELECT count(*) FROM entries"
 
 1. **平表 + 视图，不是目录树。** Inbox / Catalog / Detail 是同一张表的三个筛选条件。加一个 `status` 值应该是「多一个按钮」，不是「迁移一次目录」。
 
-2. **强制字段只有 `sourceUrl` 一项。** tags 和 taxonomy 全部可空。Atlas 首先是采集系统，不是填写调查问卷。**欠账用「未打标」视图收口，不用纪律。**
+2. **强制字段只有 `sourceUrl` 一项。** tags 和 axis values 全部可空。Atlas 首先是采集系统，不是填写调查问卷。**欠账用「未打标」视图收口，不用纪律。**
 
-3. **domain 列表和 taxonomy 维度定义都不进数据库** —— 留在 `types/atlas.ts` 的代码常量里。现在只有一个 domain，进表是提前付设计成本。等第二个真出现再搬。
+3. **当前 Axis 定义以 `design_axes` 表为准。** `types/atlas.ts` 的六根轴仅用于新库首次播种；写入校验读取数据库中的轴。当前 domain 列表仍是代码常量。
 
 **改动前先读 `docs/00-scope.md`。** 那是范围凭据，解冻理由和改写记录都在同一份文件里。
 
@@ -79,7 +79,7 @@ sqlite3 local.db "SELECT count(*) FROM entries"
 ## 五、验证
 
 ```bash
-npm run verify   # 40 条断言
+npm run verify   # 当前 service 层断言
 tsc --noEmit     # 类型
 ```
 

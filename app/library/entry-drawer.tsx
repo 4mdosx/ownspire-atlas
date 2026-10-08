@@ -4,8 +4,17 @@ import { useEffect, useState } from 'react'
 import { ExternalLink, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input, Textarea } from '@/components/ui/input'
-import { TaxonomyRow } from './taxonomy-stars'
-import { domainOf, STATUS_LABEL, TAG_GROUP_HINT, TAG_GROUP_KEYS, TAG_GROUP_LABEL, type DesignAxis, type DesignSpace, type EntryDetail, type EntryStatus } from '@/types/atlas'
+import { AxisRow } from './axis-control'
+import { SharpImage, UPSCALE_CAP_DETAIL } from './sharp-image'
+import { domainOf, STATUS_LABEL, type DesignAxis, type DesignSpace, type EntryDetail, type EntryStatus } from '@/types/atlas'
+
+type DetailTab = 'basic' | 'tags' | 'axis' | 'analysis'
+const DETAIL_TABS: { id: DetailTab; label: string }[] = [
+  { id: 'basic', label: '基本信息' },
+  { id: 'tags', label: 'Tags' },
+  { id: 'axis', label: 'Axis' },
+  { id: 'analysis', label: 'Design Analysis' },
+]
 
 /**
  * Detail 抽屉 —— 点卡片后从右侧滑出。
@@ -22,8 +31,7 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
 }) {
   const [draft, setDraft] = useState<EntryDetail>(entry)
   const [tagDraft, setTagDraft] = useState('')
-  /** 正在打开归类选择器的 tag id。null = 没打开。 */
-  const [grouping, setGrouping] = useState<string | null>(null)
+  const [tab, setTab] = useState<DetailTab>('basic')
   const [error, setError] = useState('')
 
   /**
@@ -117,31 +125,9 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
     await patch({ tagNames: merged })
   }
 
-  /**
-   * 改 tag 的归类。
-   *
-   * ⚠️ 归类挂在 **tag 实体**上，不是这条关联上 —— 所以改一次全局生效，
-   * 同名 tag 在别的条目上也会跟着变组。这是对的：「jumper 属于行为原型」
-   * 是这个词的性质，不是「这条记录里 jumper 的性质」。
-   *
-   * 所以**不用走 /api/atlas/entries/:id**（那是改这条记录的），
-   * 直接打tags 端点，然后本地同步 —— 别的条目下次刷新时自然带上新组。
-   */
-  const regroup = async (tagId: string, group: string) => {
-    const tag = draft.tags.find((item) => item.id === tagId)
-    if (!tag) return
-    const response = await fetch('/api/atlas/tags', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: tag.name, group }),
-    })
-    const body = await response.json()
-    if (!response.ok || !body.success) {
-      setGrouping(null)
-      return setError(body.error || '改归类失败')
-    }
-    setDraft({ ...draft, tags: draft.tags.map((item) => (item.id === tagId ? { ...item, group: body.data.group } : item)) })
-    setGrouping(null)
+  const setConfidence = async (tagId: string, percent: number) => {
+    if (!Number.isFinite(percent) || percent < 0 || percent > 100) return setError('置信度请输入 0–100')
+    await patch({ tagConfidence: { tagId, confidence: percent / 100 } })
   }
 
   const setStatus = async (status: EntryStatus) => {
@@ -191,19 +177,44 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
           图片区给 max-h 而不是 aspect-square —— 正方形的大图会把下方
           所有可编辑内容顶出屏幕。 */}
       <aside className="fixed inset-y-0 right-0 z-50 flex w-full max-w-xl flex-col border-l bg-background shadow-2xl">
-        <div className="max-h-[38vh] shrink-0 overflow-hidden bg-muted">
+        {/*
+          ⚠️ 高度给**固定值**，且容器是 flex 居中而不是 grid。
+          两处都是上一轮踩出来的：grid 子项的 `size-full` 会让 <img> 的
+          `h-full` 依赖「父元素有确定高度」，一旦不成立就静默失效，
+          图被裁掉一截（表现为「只显示了一半」）。
+          现在 SharpImage 内部用 `min(cap, 100%)` 自己保证不溢出，
+          容器只需要负责「给它一块地方、居中」。38vh 而不是 aspect-square：
+          正方形会把下方可编辑内容顶出屏幕。
+        */}
+        <div className="flex h-[38vh] shrink-0 items-center justify-center overflow-hidden bg-muted p-2">
           {entry.imagePath ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={`/api/atlas/entries/${entry.id}/image`} alt={entry.name} className="mx-auto max-h-[38vh] w-auto object-contain" />
+            <SharpImage
+              src={`/api/atlas/entries/${entry.id}/image`}
+              alt={entry.name}
+              maxUp={UPSCALE_CAP_DETAIL}
+              className="flex size-full items-center justify-center"
+              loading="eager"
+            />
           ) : (
             <span className="grid size-full place-items-center text-xs text-muted-foreground">这条没有图片</span>
           )}
         </div>
 
+        <div className="flex shrink-0 gap-1 overflow-x-auto border-b px-3 py-2" role="tablist" aria-label="条目详情">
+          {DETAIL_TABS.map((item) => (
+            <button key={item.id} type="button" role="tab" id={`entry-tab-${item.id}`}
+              aria-selected={tab === item.id} aria-controls={`entry-panel-${item.id}`}
+              onClick={() => setTab(item.id)}
+              className={`shrink-0 rounded-md px-2 py-1 text-xs ${tab === item.id ? 'bg-foreground text-background' : 'text-muted-foreground hover:bg-muted'}`}>
+              {item.label}
+            </button>
+          ))}
+        </div>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+          <div role="tabpanel" id="entry-panel-basic" aria-labelledby="entry-tab-basic" hidden={tab !== 'basic'} className="space-y-4">
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-              {domain ? `${domain.labelZh} · ` : ''}{STATUS_LABEL[entry.status]}
+              {domain ? `${domain.labelZh} · ` : ''}{STATUS_LABEL[draft.status]}
             </p>
             <Input aria-label="名字" value={draft.name} placeholder="名字" onChange={(event) => setDraft({ ...draft, name: event.target.value })} onBlur={() => draft.name !== entry.name && void patch({ name: draft.name })} className="h-8 text-sm" />
           </div>
@@ -234,6 +245,7 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
               打开来源
             </a>
           </section>
+          </div>
 
           {/*
             ⭐⭐ 设计空间 —— 一个 entry 在每个空间下各有一组独立坐标。
@@ -246,7 +258,7 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
             空间切换器放在这一节的标题行：它决定的是「下面这些分数在回答
             哪个问题」，所以必须在读分数之前就能看到。
           */}
-          <section>
+          <section role="tabpanel" id="entry-panel-axis" aria-labelledby="entry-tab-axis" hidden={tab !== 'axis'}>
             <div className="mb-1.5 flex items-center gap-2">
               <h3 className="text-xs font-semibold">设计空间</h3>
               {spaces.length > 1 && (
@@ -291,20 +303,20 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
                     </p>
                     <div className="divide-y">
                       {groupAxes.map((axis) => (
-                        <TaxonomyRow
+                        <AxisRow
                           key={axis.key}
                           dimension={axis}
-                          value={draft.taxonomy[axis.key]}
+                          value={draft.axisValues[axis.key]}
                           onChange={(score) => {
-                            const next = { ...draft.taxonomy, [axis.key]: score }
-                            setDraft({ ...draft, taxonomy: next })
-                            void patch({ taxonomy: { [axis.key]: score } })
+                            const next = { ...draft.axisValues, [axis.key]: score }
+                            setDraft({ ...draft, axisValues: next })
+                            void patch({ axisValues: { [axis.key]: score } })
                           }}
                           onClear={() => {
-                            const next = { ...draft.taxonomy }
+                            const next = { ...draft.axisValues }
                             delete next[axis.key as keyof typeof next]
-                            setDraft({ ...draft, taxonomy: next })
-                            void patch({ clearDimension: axis.key })
+                            setDraft({ ...draft, axisValues: next })
+                            void patch({ clearAxisKey: axis.key })
                           }}
                         />
                       ))}
@@ -315,30 +327,23 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
             )}
           </section>
 
-          <section>
+          <section role="tabpanel" id="entry-panel-tags" aria-labelledby="entry-tab-tags" hidden={tab !== 'tags'}>
             <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">
               标签
-              <span className="ml-1.5 font-normal">
-                {userTags.length > 0 ? '点名字能改归类' : '自由输入，归类可跳过'}
-              </span>
+              <span className="ml-1.5 font-normal">关联置信度按百分比编辑</span>
             </h3>
-            <div className="flex flex-wrap items-center gap-1">
+            <div className="space-y-2">
               {userTags.map((tag) => (
-                <span key={tag.id} className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-[11px]">
-                  {/*
-                    ⭐ 点名字 → 打开归类选择。
-                    ⚠️ 加了 group 字段却没有改它的入口，等于只做了一半 ——
-                    那时归类只能用代码改，而半年后没人记得哪个词属于哪组，
-                    分组筛选就成了摆设。
-                  */}
-                  <button
-                    type="button"
-                    onClick={() => setGrouping(tag.id)}
-                    title={tag.group ? `${TAG_GROUP_LABEL[tag.group]} · 点一下改归类` : '还没归类 · 点一下归类'}
-                    className="hover:text-foreground"
-                  >
-                    {tag.name}
-                  </button>
+                <div key={tag.id} className="flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs">
+                  <span className="min-w-0 flex-1 truncate">{tag.name}</span>
+                  <label className="flex shrink-0 items-center gap-1 text-muted-foreground">
+                    <span className="sr-only">{tag.name} 置信度</span>
+                    <input type="number" min="0" max="100" step="1" defaultValue={Math.round(tag.confidence * 100)}
+                      key={`${tag.id}-${tag.confidence}`} aria-label={`${tag.name} 置信度百分比`}
+                      onBlur={(event) => { if (event.target.value !== '') void setConfidence(tag.id, Number(event.target.value)) }}
+                      onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }}
+                      className="h-7 w-14 rounded border bg-background px-1 text-right text-xs text-foreground" />%
+                  </label>
                   <button
                     type="button"
                     title="摘掉这个标签"
@@ -346,7 +351,7 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
                       const response = await fetch(`/api/atlas/entries/${entry.id}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ detachTagId: tag.id }),
+                        body: JSON.stringify({ detachTagId: tag.id, spaceId }),
                       })
                       const body = await response.json()
                       if (response.ok && body.success) {
@@ -358,48 +363,23 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
                   >
                     <X className="size-2.5" />
                   </button>
-                </span>
+                </div>
               ))}
             </div>
 
-            {/* 归类选择：分组下拉。用原生 select 而不是自建菜单 —— 选项只有 7 个，
-                自建菜单要处理键盘导航与焦点管理，成本远大于收益。 */}
-            {grouping && (
-              <div className="mt-2 flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
-                <span className="text-[11px] text-muted-foreground">
-                  {draft.tags.find((tag) => tag.id === grouping)?.name} 属于：
-                </span>
-                <select
-                  autoFocus
-                  aria-label="tag 归类"
-                  value={draft.tags.find((tag) => tag.id === grouping)?.group ?? ''}
-                  onChange={(event) => void regroup(grouping, event.target.value)}
-                  onBlur={() => setGrouping(null)}
-                  className="h-6 rounded border bg-background px-1 text-[11px] outline-none"
-                >
-                  {/* ⚠️ 空串选项 = 取消归类。必须留着 —— 归类是可选的，
-                      误归类之后要能退回去。 */}
-                  <option value="">未归类</option>
-                  {TAG_GROUP_KEYS.map((key) => (
-                    <option key={key} value={key}>
-                      {TAG_GROUP_LABEL[key]}
-                    </option>
-                  ))}
-                </select>
-                <span className="text-[10px] text-muted-foreground">
-                  {/* ⚠️ 空串（未归类）没有 HINT 条目 —— 直接索引会拿到 undefined。 */}
-                  {TAG_GROUP_HINT[draft.tags.find((tag) => tag.id === grouping)?.group || 'taxonomy']}
-                </span>
-              </div>
-            )}
             {/* ⚠️ 系统 tag 单独一块，不可摘 —— 它们是系统按规则挂的，
                 用户摘掉等于把「这条属于哪个项目」的标记抹了。要改走 ruleId。 */}
             {systemTags.length > 0 && (
-              <div className="mt-1.5 flex flex-wrap items-center gap-1">
+              <div className="mt-2 space-y-2">
                 {systemTags.map((tag) => (
-                  <span key={tag.id} title={`系统 tag · 规则 ${tag.ruleId}`} className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[11px] text-primary">
-                    ⚙ {tag.name}
-                  </span>
+                  <div key={tag.id} title={`系统 tag · 规则 ${tag.ruleId}`} className="flex items-center gap-2 rounded-md border bg-primary/5 px-2 py-1.5 text-xs">
+                    <span className="min-w-0 flex-1 truncate">⚙ {tag.name}</span>
+                    <input type="number" min="0" max="100" step="1" defaultValue={Math.round(tag.confidence * 100)}
+                      key={`${tag.id}-${tag.confidence}`} aria-label={`${tag.name} 置信度百分比`}
+                      onBlur={(event) => { if (event.target.value !== '') void setConfidence(tag.id, Number(event.target.value)) }}
+                      onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }}
+                      className="h-7 w-14 rounded border bg-background px-1 text-right text-xs" />%
+                  </div>
                 ))}
               </div>
             )}
@@ -426,52 +406,7 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
             </div>
           </section>
 
-          {/*
-            ⚠️ **原来这里有「怪物设计」区**（招式 / 行为模式 / 前摇特征 /
-            受击反应四个结构化字段），2026-10-06 域收窄为**形象设计**时删掉了。
-
-            删的理由不是「不重要」，而是**结构化字段的唯一价值是「要按它查询」**
-            —— 表情与动作不会被查询。没有人会问「把所有前摇超过 0.5 秒的怪
-            筛出来」。而留着四个空输入框的代价是每次采集都要面对它们。
-
-            这些内容现在写进下面的 `observed` 自由文本，一行就够。
-          */}
-
-          {/*
-            ⭐⭐「我为什么留着它」放在观察与判断**之前**，而且样式更重。
-            这一句才是 Creative Atlas 区别于收藏夹与 wiki 的地方：前两者存
-            「这是什么」，这里存「这值得我留着的理由是什么」。
-
-            位置是刻意的：它是每条记录半年后最值钱的一句，应该在滚动时
-            第一个撞进眼睛，而不是排在最后当补充说明。
-          */}
-          <section className="rounded-md border-2 border-foreground/15 bg-accent/30 p-3">
-            <h3 className="mb-1 text-xs font-semibold">
-              我为什么留着它
-              <span className="ml-1.5 font-normal text-muted-foreground">半年后回看，这句最值钱</span>
-            </h3>
-            <Textarea
-              aria-label="值得存的原因"
-              rows={3}
-              placeholder="它身上有什么东西值得我停下来看？&#10;「非常简单地用蓄力→冲刺建立了一种高 commitment / 高 readability 的攻击」"
-              value={draft.worthwhileBecause}
-              onChange={(event) => setDraft({ ...draft, worthwhileBecause: event.target.value })}
-              onBlur={() => draft.worthwhileBecause !== entry.worthwhileBecause && void patch({ worthwhileBecause: draft.worthwhileBecause })}
-              className="text-xs"
-            />
-          </section>
-
-          {/*
-            ⭐ 观察与判断严格分区（2026-10-06）。
-            分开不是洁癖：混在一个字段里，半年后无法分辨哪句是原作事实、
-            哪句是我的解读 —— 而混在一起的判断等于没有判断（不敢改，
-            因为改了对= 承认之前在编）。
-
-            ⚠️ **placeholder 全部换成视觉例子**（同日域收窄）：这个域只管形象
-            设计，所以引导语不该再拿「攻击前摇 0.5 秒」当范例 —— 那是动作
-            表现，是被砍掉的那一类。**看到什么例子就会写什么例子**；行为观察
-            不是禁止写，只是不该由界面主动邀请。
-          */}
+          <div role="tabpanel" id="entry-panel-analysis" aria-labelledby="entry-tab-analysis" hidden={tab !== 'analysis'} className="space-y-4">
           <section>
             <h3 className="mb-1 text-xs font-semibold text-muted-foreground">
               观察 <span className="font-normal">· 我看到了什么（客观）</span>
@@ -501,6 +436,20 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
               className="text-xs"
             />
           </section>
+
+          <section className="rounded-md border-2 border-foreground/15 bg-accent/30 p-3">
+            <h3 className="mb-1 text-xs font-semibold">目的 <span className="font-normal text-muted-foreground">· 我为什么留着它</span></h3>
+            <Textarea
+              aria-label="值得存的原因"
+              rows={3}
+              placeholder="它身上有什么东西值得我停下来看？"
+              value={draft.worthwhileBecause}
+              onChange={(event) => setDraft({ ...draft, worthwhileBecause: event.target.value })}
+              onBlur={() => draft.worthwhileBecause !== entry.worthwhileBecause && void patch({ worthwhileBecause: draft.worthwhileBecause })}
+              className="text-xs"
+            />
+          </section>
+          </div>
 
           {error && <p className="text-xs text-destructive">{error}</p>}
         </div>

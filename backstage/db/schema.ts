@@ -47,9 +47,6 @@ export const entries = sqliteTable('entries', {
    * 分不清哪句是原作的事实、哪句是我加的解读 —— 而**混在一起的判断等于
    * 没有判断**：不敢改，因为改了对= 承认之前在编。
    *
-   * ⚠️ `notes` 保留为 deprecated 别名，读写都映射到 observed。已有的
-   * entries 里的 notes 内容**保守地全算 observed** —— 不猜用户哪些是判断，
-   * 猜错比不猜贵。要挪的话由用户在界面上自己动手。
    */
   observed: text('observed').notNull().default(''),
   read: text('read').notNull().default(''),
@@ -68,10 +65,7 @@ export const entries = sqliteTable('entries', {
    */
   worthwhileBecause: text('worthwhileBecause').notNull().default(''),
 
-  /** @deprecated 已并入 observed。保留是为了让旧行还能读，见上方说明。 */
-  notes: text('notes').notNull().default(''),
-
-  status: text('status').notNull().default('inbox'),
+  status: text('status').notNull().default('pending_ai'),
 
   /**
    * ⭐ 分析的确定度（2026-10-07）。
@@ -122,23 +116,10 @@ export const monsterEntries = sqliteTable('monster_entries', {
  * 只有一行，但可能你手动加过、系统也自动加过。origin 挂在 tag 上，
  * 这一行的归属就歧义了。
  *
- * ⭐ `groupName` 是命名空间（2026-10-06）：primitive / visual / concept /
- * role / context / taxonomy。
- *
- * ⚠️ **为什么现在就需要它**：半年后 800 个 tag 混在一起，就只能靠一个个
- * 划标签做 Faceted Search，而那时再补命名空间要手工回填几百行 —— 而
- * **回填时你已经不记得当初为什么给某个 tag 选了哪个组**。趁现在只有几十个
- * tag、还都记得住的时候定下来，成本是零。
- *
- * ⚠️ **显示名不带前缀**。内部存 `jumper` + group=`primitive`，界面显示
- * 「Jumper」。前缀只是内部知识，不该漏给用户看 —— 否则每个 tag 都变成
- * 「primitive:Jumper」这种噪音。
  */
 export const tags = sqliteTable('tags', {
   id: text('id').primaryKey(),
   name: text('name').notNull().unique(),
-  /** 命名空间。空字符串 = 还没归类，不阻塞使用 —— 强制归类会让随手加 tag 变成负担。 */
-  groupName: text('groupName').notNull().default(''),
   createdAt: text('createdAt').notNull(),
   updatedAt: text('updatedAt').notNull(),
 })
@@ -161,17 +142,15 @@ export const entryTags = sqliteTable(
       .references(() => tags.id, { onDelete: 'cascade' }),
     origin: text('origin').notNull().default('user'),
     ruleId: text('ruleId').notNull().default(''),
+    confidence: real('confidence').notNull().default(1),
     createdAt: text('createdAt').notNull(),
   },
   (table) => [primaryKey({ columns: [table.entryId, table.tagId] })],
 )
 
 /**
- * taxonomy 打分 —— **我对这条设计做的投影**，不是它的客观属性。
- *
- * ⚠️ 维度定义（维度列表、中英文、顺序、极值）**在代码常量里**，不在数据库。
- * 这是「字段要从数据里长出来」的纪律在框架层的应用：现在只有一个 domain，
- * 进表是提前付成本。等第二个 domain 出现、维度真要分叉再搬。
+ * Axis 当前值 —— **我对这条设计做的投影**，不是它的客观属性。
+ * Axis 定义以 design_axes 表为准；这里仅保存已打分的值。
  *
  * ⚠️ 存 0–1 连续分，**不存星数**。星级是显示编码：`star = round(score × 5)`。
  * 界面是 1–5 星（5 档离散）而数据是 0.01 精度（101 档），这个矛盾靠
@@ -189,8 +168,8 @@ export const entryTags = sqliteTable(
  * hintZh 都要按这个写；`setAt` 记下这个判断是什么时候做的，让「我改主意了」
  * 有痕迹可循，而不是一次覆盖、没有历史。
  */
-export const entryTaxonomy = sqliteTable(
-  'entry_taxonomy',
+export const entryAxisValues = sqliteTable(
+  'entry_axis_values',
   {
     entryId: text('entryId')
       .notNull()
@@ -204,16 +183,15 @@ export const entryTaxonomy = sqliteTable(
      */
     spaceId: text('spaceId')
       .notNull()
-      .default('')
       .references(() => designSpaces.id, { onDelete: 'cascade' }),
-    dimensionKey: text('dimensionKey').notNull(),
-    score: real('score').notNull(),
+    axisKey: text('axisKey').notNull(),
+    value: real('value').notNull(),
     /** ⭐ 我定这个投影值的时间。不是 db 的时间戳 —— 那是「行被写过」，这个是
      *  「我的判断成形于何时」。改分时会更新它，于是「我改主意了」有痕迹。 */
-    setAt: text('setAt').notNull().default(''),
+    setAt: text('setAt').notNull(),
     updatedAt: text('updatedAt').notNull(),
   },
-  (table) => [primaryKey({ columns: [table.entryId, table.spaceId, table.dimensionKey] })],
+  (table) => [primaryKey({ columns: [table.entryId, table.spaceId, table.axisKey] })],
 )
 
 /**
@@ -236,7 +214,7 @@ export const importIdMap = sqliteTable('import_id_map', {
  *   「原作的移动性」    → 对原作的**观察**  → 原作里它有多能跑
  *   「我的移动性」      → 对原作的**解读**  → 我认为它有多能跑
  *
- * 两者挤在同一列（v0.2 的`entry_taxonomy`）时，半年后把0.70 改成 0.55
+ * 两者挤在同一列（v0.2 的`entry_axis_values`）时，半年后把0.70 改成 0.55
  * 就**无法判断自己在改什么**：按「属性」读只能理解成记错了，于是不敢改；
  * 按「投影」读才是「我的理解变了」。不敢改分的坐标系会慢慢被当成不可动的
  * 客观事实，那时 Atlas 就退化成 wiki 了 —— 而它本来就不该是 wiki。

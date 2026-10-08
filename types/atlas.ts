@@ -1,11 +1,11 @@
-export type EntryStatus = 'inbox' | 'reviewed' | 'reference'
+export type EntryStatus = 'pending_ai' | 'inbox' | 'reviewed'
 
-export const ENTRY_STATUSES: EntryStatus[] = ['inbox', 'reviewed', 'reference']
+export const ENTRY_STATUSES: EntryStatus[] = ['pending_ai', 'inbox', 'reviewed']
 
 export const STATUS_LABEL: Record<EntryStatus, string> = {
+  pending_ai: '待 AI 处理',
   inbox: 'Inbox',
   reviewed: 'Reviewed',
-  reference: 'Reference',
 }
 
 export type ImageSource = 'paste' | 'file'
@@ -90,45 +90,11 @@ export function domainOf(code: string): DomainDef | null {
   return DOMAINS.find((domain) => domain.code === code) ?? null
 }
 
-/**
- * ⚠️ 旧 code → 新 code（2026-10-07`monster` 改名 `creature`）。
- *
- * ⚠️ **保留映射是为了让历史数据与旧导出包继续可用**，而不是舍不得改。
- * 读的时候两个 code 都认；写的时候一律写新的那个。
- * 真的删掉这条别名应该是「数据里再也没有旧值、导出包也全升级完」之后的事。
- */
-export const DOMAIN_ALIASES: Readonly<Record<string, DomainCode>> = { monster: 'creature' }
-
-/** 归一化 code：认旧名，返回新名。不认识就原样返回（调用方决定怎么报错）。 */
-export function normalizeDomainCode(value: string): string {
-  return DOMAIN_ALIASES[value] ?? value
-}
-
 /* ──────────────────────────────────────────────────────────────
- * Taxonomy —— 连续打分，与 tag 系统无关
+ * Axis —— 连续设计空间，与 Tag 独立。
  *
- * tag 是「是/不是」的分类标签，taxonomy 是「有多」的度量刻度。两者互不隶属：
- * · tag 任意输入，没有白名单，一套 tag 跨 domain 复用
- * · taxonomy 维度由 domain 确定，中英文双语，存 0–1 连续分
- *
- * ⚠️ **维度定义在这里，不在数据库。** 见上方 domain 同理。
- *
- * ⭐ **两级结构：domain → group → dimension**（2026-10-06）
- *
- * 原来是平铺五个维度（form/scale/movement/combat/role），界面上就是五行，
- * 看不出它们之间「谁和谁是一伙的」。现在按语义聚成两个 group：
- *
- *   形态 Form        它长什么样 —— 是什么东西、多大
- *     ├ form    形态型
- *     └ scale   体量
- *   战斗 Combat      它怎么动、怎么打、干什么
- *     ├ movement  移动
- *     ├ combat    战斗方式
- *     └ role      定位
- *
- * 「Scale 放进 Form」「Movement 和 Role 放进 Combat」就是这个意思。
- * group 只是**展示层的归类**，不落库、不进 entry_taxonomy —— 那是 key 的
- * 扁平结构该背的债，不该让数据模型替界面的分组长久买单。
+ * Tag 是离散判断；Axis 是连续位置，值存 0–1。运行时轴定义来自
+ * `design_axes`，下方常量仅供新库首次播种。
  * ────────────────────────────────────────────────────────────── */
 
 /* ──────────────────────────────────────────────────────────────
@@ -141,7 +107,7 @@ export function normalizeDomainCode(value: string): string {
  * ⚠️ 空间之间**不共享维度**。`我的.mobility` 与 `原作.mobility` 是两个不同的
  * 问题，硬塞进一个共享定义恰好把这里要分开的区别又合回去。
  *
- * ⚠️ 下面那份 MONSTER_TAXONOMY 现在只是**首次初始化的种子** —— 维度归数据库
+ * ⚠️ 下面那份 CREATURE_AXIS_SEEDS 现在只是**首次初始化的种子** —— 维度归数据库
  * 管之后，它不再被写入侧当作权威来源读。留着是为了让新库开箱就有完整的
  * 「我的」空间，而不是空表。
  * ────────────────────────────────────────────────────────────── */
@@ -238,20 +204,20 @@ export const SPACE_MINE = 'mine'
  * `'form' | 'scale' | ...` 那种固定枚举。每加一条轴都要能直接用，不该逼着
  * 改类型定义，而那正是「维度该归数据库管」这件事要摆脱的。
  *
- * ⚠️ 只在**种子**里用得上具体字符串（MONSTER_TAXONOMY）。运行时的校验靠
+ * ⚠️ 只在**种子**里用得上具体字符串（CREATURE_AXIS_SEEDS）。运行时的校验靠
  * 「这个空间实际有哪些轴」（service 层查 design_axes），不靠类型。
  */
-export type TaxonomyDimensionKey = string
+export type AxisKey = string
 
 /** 维度的归类 group —— 纯展示用，不进数据库。 */
-export type TaxonomyGroupKey = 'form' | 'read'
+export type AxisGroupKey = 'form' | 'read'
 
-export type TaxonomyDimensionDef = {
-  key: TaxonomyDimensionKey
+export type AxisSeedDef = {
+  key: AxisKey
   labelZh: string
   labelEn: string
   /** 归到哪个 group。决定界面上挨着谁。 */
-  group: TaxonomyGroupKey
+  group: AxisGroupKey
   /**
    * 这一轴的**完整档位**，从低到高。
    *
@@ -264,8 +230,8 @@ export type TaxonomyDimensionDef = {
   hintZh: string
 }
 
-export type TaxonomyGroupDef = {
-  key: TaxonomyGroupKey
+export type AxisGroupSeedDef = {
+  key: AxisGroupKey
   labelZh: string
   labelEn: string
   hintZh: string
@@ -279,21 +245,10 @@ export type TaxonomyGroupDef = {
  * · 形态：体量 / 比例 / 形体语言 / 视觉复杂度 —— 都是「客观可见的形状」
  * · 可读性：熟悉度 / 气质 —— 都是「它让人读出什么」，与形状有关但不是形状
  */
-export const MONSTER_TAXONOMY_GROUPS: readonly TaxonomyGroupDef[] = [
+export const CREATURE_AXIS_GROUPS: readonly AxisGroupSeedDef[] = [
   { key: 'form', labelZh: '形态', labelEn: 'Form', hintZh: '它长什么样 —— 客观可见的形状' },
   { key: 'read', labelZh: '可读性', labelEn: 'Readability', hintZh: '它让人读出什么 —— 辨识度与第一眼气质' },
 ] as const
-
-/**
- * domain → group 定义。
- *
- * ⚠️ 与 TAXONOMY_BY_DOMAIN 同理：group 也不进数据库。组件通过
- * `groupsOf(domain)` 取，**不直接 import MONSTER_TAXONOMY_GROUPS** ——
- * 否则换 domain 就要改组件，那等于把 domain 的知识漏进界面代码里。
- */
-export const TAXONOMY_GROUPS_BY_DOMAIN: Record<DomainCode, readonly TaxonomyGroupDef[]> = {
-  creature: MONSTER_TAXONOMY_GROUPS,
-}
 
 /**
  * ⭐⭐ creature domain 的维度 —— **六根视觉轴**（2026-10-07）。
@@ -317,7 +272,7 @@ export const TAXONOMY_GROUPS_BY_DOMAIN: Record<DomainCode, readonly TaxonomyGrou
  * 它看起来危险与它实际上有多强无关。所以它和 combat domain 里的「威胁」
  * 重名，但不是同一件事。
  */
-export const MONSTER_TAXONOMY: readonly TaxonomyDimensionDef[] = [
+export const CREATURE_AXIS_SEEDS: readonly AxisSeedDef[] = [
   {
     key: 'visualMass',
     labelZh: '视觉体量',
@@ -368,41 +323,6 @@ export const MONSTER_TAXONOMY: readonly TaxonomyDimensionDef[] = [
   },
 ] as const
 
-/** domain → 维度定义。换 domain 就换一组维度。 */
-export const TAXONOMY_BY_DOMAIN: Record<DomainCode, readonly TaxonomyDimensionDef[]> = {
-  creature: MONSTER_TAXONOMY,
-}
-
-export function dimensionsOf(domain: DomainCode): readonly TaxonomyDimensionDef[] {
-  return TAXONOMY_BY_DOMAIN[domain] ?? []
-}
-
-/** 某个 group 下的维度，按定义顺序。界面上按 group 分块渲染用它。 */
-export function dimensionsInGroup(
-  domain: DomainCode,
-  group: TaxonomyGroupKey,
-): readonly TaxonomyDimensionDef[] {
-  return dimensionsOf(domain).filter((dimension) => dimension.group === group)
-}
-
-/** 某个 domain 的 group 列表（按定义顺序）。 */
-export function groupsOf(domain: DomainCode): readonly TaxonomyGroupDef[] {
-  return TAXONOMY_GROUPS_BY_DOMAIN[domain] ?? []
-}
-
-export function dimensionKeysOf(domain: DomainCode): readonly TaxonomyDimensionKey[] {
-  return dimensionsOf(domain).map((dimension) => dimension.key)
-}
-
-/** 维度 key 是否属于该 domain —— **写入侧校验**用的就是这个。 */
-export function isDimensionOf(domain: DomainCode, key: string): boolean {
-  return dimensionsOf(domain).some((dimension) => dimension.key === key)
-}
-
-export function dimensionOf(domain: DomainCode, key: TaxonomyDimensionKey): TaxonomyDimensionDef | null {
-  return dimensionsOf(domain).find((dimension) => dimension.key === key) ?? null
-}
-
 /* ── 星级 ⇆ score 映射 ──────────────────────────────────────────
  *
  * ⚠️ 数据是 0–1 连续分（0.01 精度），界面是 1–5 星（5 档离散）。这两个数
@@ -415,20 +335,20 @@ export function dimensionOf(domain: DomainCode, key: TaxonomyDimensionKey): Taxo
  * **星级是显示编码，不是数据。** 数据库存 score，不存星数。
  * ────────────────────────────────────────────────────────────── */
 
-export const TAXONOMY_MIN = 0
-export const TAXONOMY_MAX = 1
-export const TAXONOMY_STARS = 5
+export const AXIS_MIN = 0
+export const AXIS_MAX = 1
+export const AXIS_STARS = 5
 /** 点击一颗星的步进：半星可点 → 10 档。 */
-export const TAXONOMY_CLICK_STEP = 0.2
+export const AXIS_CLICK_STEP = 0.2
 /** 方向键微调步进。 */
-export const TAXONOMY_FINE_STEP = 0.01
+export const AXIS_FINE_STEP = 0.01
 
 export function scoreToStars(score: number): number {
-  return Math.round(clampScore(score) * TAXONOMY_STARS)
+  return Math.round(clampScore(score) * AXIS_STARS)
 }
 
 export function starsToScore(star: number): number {
-  return clampScore(round2(star / TAXONOMY_STARS))
+  return clampScore(round2(star / AXIS_STARS))
 }
 
 /**
@@ -444,8 +364,8 @@ export function starsToScore(star: number): number {
  */
 /**
  * ⚠️ 参数是**最小形状** `{ anchors: readonly string[] }` 而不是
- * `TaxonomyDimensionDef` —— 因为坐标轴现在有两种来源：代码里的
- * TaxonomyDimensionDef（首次种子）与数据库里的 DesignAxis。它们对
+ * `AxisSeedDef` —— 因为坐标轴现在有两种来源：代码里的
+ * AxisSeedDef（首次种子）与数据库里的 DesignAxis。它们对
  * 「档位 → 分数」是同一套规则，写死具体类型就等于逼着写两份实现，
  * 而两份实现早晚有一处忘了改，且那种 bug 只在数据里显形。
  */
@@ -475,8 +395,8 @@ export function scoreToAnchor(dimension: { anchors: readonly string[] }, score: 
 }
 
 export function clampScore(score: number): number {
-  if (Number.isNaN(score)) return TAXONOMY_MIN
-  return Math.min(TAXONOMY_MAX, Math.max(TAXONOMY_MIN, score))
+  if (Number.isNaN(score)) return AXIS_MIN
+  return Math.min(AXIS_MAX, Math.max(AXIS_MIN, score))
 }
 
 export function round2(value: number): number {
@@ -495,9 +415,9 @@ export function round2(value: number): number {
  *
  * 想要 0.01 精度走滑杆 / 方向键，不靠点击。
  */
-export const TAXONOMY_STEPS: number[] = Array.from(
-  { length: Math.round((TAXONOMY_MAX - TAXONOMY_MIN) / TAXONOMY_CLICK_STEP) + 1 },
-  (_, index) => round2(TAXONOMY_MIN + index * TAXONOMY_CLICK_STEP),
+export const AXIS_STEPS: number[] = Array.from(
+  { length: Math.round((AXIS_MAX - AXIS_MIN) / AXIS_CLICK_STEP) + 1 },
+  (_, index) => round2(AXIS_MIN + index * AXIS_CLICK_STEP),
 )
 
 /* ──────────────────────────────────────────────────────────────
@@ -506,31 +426,45 @@ export const TAXONOMY_STEPS: number[] = Array.from(
  * ⚠️ 这是**显示偏好**，不是数据 —— 所以不进数据库，跟 domain 选择一样
  * 存 localStorage。
  *
- * 为什么要三档：v0 的实际用途是「一眼扫过去找东西」。160px 看得清细节但
- * 一屏只放几张；96px 一屏几十张但看不清图；256px 是「停下来仔细看」的
- * 状态。**三档对应三种意图**，不是「大中小」审美选择。
+ * ⚠️⚠️ **2026-10-07 从三档改成三档，但**换掉了一个中间档**：删掉 `md`，
+ * 加入 `list`（多列列表）。
+ *
+ * 原来三档是 96 / 160 / 260，理由是「三档对应三种意图」。**这个论证有个漏洞：
+ * 160px 那一档两种意图都不占** —— 它比 96px 看得清，但一屏还是放不下几张，
+ * 于是实际使用中永远停在 96 或 260。中间档不是「中性选择」，是**没想清楚的
+ * 那一档**。删掉它比留着它更诚实。
+ *
+ * 补进来的 `list` 回答的是另一个问题：**「我在读列表，不是在看图」。**
+ * 96px 一屏几十个但每张都认不清；260px 认得清但一屏几张。而「我想知道库里
+ * 有什么」这个问题，用 8 列表格回答比用图墙回答快得多 —— 扫一行文字比扫
+ * 一张缩略图快。**图墙擅长「认出来」，列表擅长「读完」**，这是两种不同的
+ * 浏览动作，不该用同一个控件的三档来表达。
  * ────────────────────────────────────────────────────────────── */
 
-export type GallerySize = 'sm' | 'md' | 'lg'
+export type GallerySize = 'sm' | 'lg' | 'list'
 
-export const GALLERY_SIZES: readonly GallerySize[] = ['sm', 'md', 'lg'] as const
+export const GALLERY_SIZES: readonly GallerySize[] = ['sm', 'lg', 'list'] as const
 
 export const GALLERY_SIZE_LABEL: Record<GallerySize, string> = {
   sm: '小',
-  md: '中',
   lg: '大',
+  list: '列表',
 }
 
 /**
  * 每档的**最小列宽**（px）—— `auto-fill` 的那个 minmax。
  *
- * ⚠️ 为什么数字往小收：v0 的库是靠「扫」来用的，160px 一屏放不下几张，
+ * ⚠️ 为什么数字往小收：v0 的库是靠「扫」来用的，260px 一屏放不下几张，
  * 扫不动。96px 才是「一屏能扫几十个」的量级。lg 留给需要看清图的时刻。
+ *
+ * ⚠️ `list` 档是**定宽**而不是 auto-fill：列表的行高与缩略图大小绑定，
+ * 按视口宽度自动分列会让每行缩略图大小随窗口抖动 —— 那正是「列表」这个
+ * 模式要避免的（它换来的就是稳定）。固定 260px 一列，一眼能数清「一行几条」。
  */
 export const GALLERY_MIN_COLUMN: Record<GallerySize, number> = {
   sm: 96,
-  md: 160,
   lg: 260,
+  list: 260,
 }
 
 export function isGallerySize(value: string): value is GallerySize {
@@ -563,86 +497,16 @@ export const ORIGIN_LABEL: Record<TagOrigin, string> = {
 export type Tag = {
   id: string
   name: string
-  /**
-   * 命名空间（2026-10-06）。空字符串 = 还没归类。
-   *
-   * ⚠️ 不强制：随手加一个 tag 不该被「必须先选组」拦住。归类是给
-   * Faceted Search 用的，欠着不影响找得到东西。
-   */
-  group: TagGroup
   createdAt: string
   updatedAt: string
-}
-
-/**
- * ⭐⭐ tag 的四种参照系（2026-10-07 token 裁定）。
- *
- * **判据：这条 tag 在回答哪个问题？** 四个问题互不重叠，所以四组也互不重叠 ——
- * 而「互不重叠」正是 Faceted Search 能用的前提（同组内多选是 OR，跨组是 AND，
- * 那个组合只有在组之间真的正交时才有意义）。
- *
- * ⚠️ **Primitive 全部交给 tag，坐标轴一条不留**（同日改动）。原来的
- * `form`（blob/humanoid/beast）就是典型：它是「它属于哪一类」，是**归类**，
- * 不是刻度上的位置。**轴与分类的分界就在这里**。
- *
- * ⚠️ 组名从英文直译过来（motif / form / feature / device），因为它们其实是
- * **四种不同的参照系**，各说各的：
- * · motif 问「像什么」—— 借用现实世界的原型
- * · form 问「是什么」—— 身体结构本身
- * · feature 问「有什么」—— 具体零件
- * · device 问「怎么做的」—— 造型手法与视觉惯例
- */
-export type TagGroupKey = 'motif' | 'form' | 'feature' | 'device' | 'taxonomy'
-
-export const TAG_GROUP_KEYS: readonly TagGroupKey[] = [
-  'motif',
-  'form',
-  'feature',
-  'device',
-  'taxonomy',
-] as const
-
-export const TAG_GROUP_LABEL: Record<TagGroupKey, string> = {
-  motif: '原型来源',
-  form: '形体',
-  feature: '特征',
-  device: '视觉手法',
-  taxonomy: '未归类',
-}
-
-export const TAG_GROUP_HINT: Record<TagGroupKey, string> = {
-  motif: '它像什么 —— animal:cat / plant:mushroom / object:clock',
-  form: '它是什么身体 —— blob / biped / quadruped / serpentine / floating',
-  feature: '它身上有什么 —— horn / wing / tail / shell / oversized-head',
-  device: '造型怎么做的 —— face-on-body / asymmetry / layered-shell',
-  taxonomy: '还没归类的 —— 点一下能改',
-}
-
-export type TagGroup = TagGroupKey | ''
-
-export function isTagGroupKey(value: string): value is TagGroupKey {
-  return (TAG_GROUP_KEYS as readonly string[]).includes(value)
 }
 
 /** 带关联元数据的 tag —— 列表和导出用这个形态。 */
 export type EntryTag = Tag & {
   origin: TagOrigin
   ruleId: string
-}
-
-export type TaxonomyScore = {
-  dimensionKey: TaxonomyDimensionKey
-  /**
-   * ⭐ **我对这条设计做的投影**，不是它的客观属性（2026-10-06）。
-   *
-   * 「0.7」的意思是「在我的怪物设计语言里，我把它理解为 0.7」，
-   * 不是「原作里它是 0.7」。半年后改成 0.55 不是数据错误，
-   * 是我对怪物设计的理解变了 —— 这个区别是整个 Atlas 的立身之本。
-   */
-  score: number
-  /** 我定这个投影值的时间。改分会更新它，于是「我改主意了」有痕迹可循。 */
-  setAt: string
-  updatedAt: string
+  /** 此条目与标签的关联置信度，范围 0–1。 */
+  confidence: number
 }
 
 /** 顶层条目。所有 domain 共用。 */
@@ -716,7 +580,7 @@ export type MonsterExtension = {
 /**
  * 列表页 / 详情页要显示的聚合形态。
  *
- * ⚠️ taxonomy 是 sparse 的：没打分的维度不出现。所以是 Record 不是定长数组。
+ * ⚠️ axisValues 是 sparse 的：没打分的维度不出现。所以是 Record 不是定长数组。
  * extension 只在 domain 匹配时才有值。
  */
 export type EntryDetail = Entry & {
@@ -725,10 +589,10 @@ export type EntryDetail = Entry & {
    * ⭐ 坐标。key 是**该空间下的轴 key**，不是固定枚举（2026-10-06）。
    *
    * ⚠️ 维度定义搬进数据库之后，轴的集合随设计空间变化，所以这里不能再是
-   * `Partial<Record<TaxonomyDimensionKey, ...>>` 那种固定键 —— 那会让每加
+   * `Partial<Record<AxisKey, ...>>` 那种固定键 —— 那会让每加
    * 一条轴都要改类型定义，而那正是「维度该归数据库管」这件事要摆脱的。
    */
-  taxonomy: Partial<Record<string, number>>
+  axisValues: Partial<Record<string, number>>
   extension: MonsterExtension | null
 }
 
@@ -739,8 +603,8 @@ export type EntrySummary = Entry & {
    * ⭐ 坐标。key 是**该空间下的轴 key**，不是固定枚举（2026-10-06）。
    *
    * ⚠️ 维度定义搬进数据库之后，轴的集合随设计空间变化，所以这里不能再是
-   * `Partial<Record<TaxonomyDimensionKey, ...>>` 那种固定键 —— 那会让每加
+   * `Partial<Record<AxisKey, ...>>` 那种固定键 —— 那会让每加
    * 一条轴都要改类型定义，而那正是「维度该归数据库管」这件事要摆脱的。
    */
-  taxonomy: Partial<Record<string, number>>
+  axisValues: Partial<Record<string, number>>
 }

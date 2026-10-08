@@ -1,15 +1,15 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { resolveMediaPath } from '@/backstage/db/database'
-import { allScoresOf, createEntry, entriesOrderedById, rememberImportedId, resolveImportedId, setTaxonomy } from './entry.service'
-import { attachSystemTag, findOrCreateTag, setEntryTags, tagsForEntries } from './tag.service'
+import { allScoresOf, createEntry, entriesOrderedById, rememberImportedId, resolveImportedId, setAxisValues } from './entry.service'
+import { attachSystemTag, findOrCreateTag, setEntryTagConfidence, setEntryTags, tagsForEntries } from './tag.service'
 import { createDesignAxis, createDesignSpace, findSpaceByCode, listDesignAxes, listDesignSpaces } from './space.service'
 import { exportStamp, EXPORT_FORMAT_VERSION, toExportTag, writeExport, type ExportAxis, type ExportEntry, type ExportManifest } from './export.service'
-import { ENTRY_STATUSES, isDomainCode, isTagGroupKey, type DomainCode, type EntryStatus, type TagGroup } from '@/types/atlas'
+import { ENTRY_STATUSES, isDomainCode, type DomainCode, type EntryStatus } from '@/types/atlas'
 
 function toExportEntry(
   entry: Awaited<ReturnType<typeof entriesOrderedById>>[number],
-  scoresBySpace: Record<string, Record<string, number>>,
+  axisValuesBySpace: Record<string, Record<string, number>>,
 ): ExportEntry {
   return {
     id: entry.id,
@@ -21,16 +21,14 @@ function toExportEntry(
     imagePath: entry.imagePath,
     imageSource: entry.imageSource,
     originalName: entry.originalName,
-    // ⚠️ notes 恒为空 —— v3 起它已经被 observed / read 取代。见 export.service.ts。
     observed: entry.observed,
     read: entry.read,
     worthwhileBecause: entry.worthwhileBecause,
-    notes: '',
     status: entry.status,
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt,
     tags: entry.tags.map(toExportTag),
-    scoresBySpace,
+    axisValuesBySpace,
     extension: entry.extension,
   }
 }
@@ -111,33 +109,23 @@ export async function importFrom(root: string) {
   } catch {
     throw new Error('这个目录里没有可读的 manifest.json')
   }
-  // ⚠️ **不猜，不兼容就报错。** 每个旧版本都因为**不同的**原因无法无损
-  // 导入，错误信息必须说清是哪一种 —— 笼统说「版本不对」会让人以为是文件坏了。
   if (manifest.formatVersion !== EXPORT_FORMAT_VERSION) {
-    const current = EXPORT_FORMAT_VERSION
-    throw new Error(
-      manifest.formatVersion === 1
-        ? `这是 v0.1 的老导出包（formatVersion 1），当前是 ${current}。老包没有 domain / 坐标 / tag 来源信息，无法无损导入。`
-        : manifest.formatVersion === 2
-          ? `这是 v0.2 的导出包（formatVersion 2），当前是 ${current}。老包的 notes 里观察与判断混在一起，`
-            + '自动拆分只能靠猜 —— 猜错等于把我的判断当原作事实存下来。要导入请先把 notes 手工拆成 observed / read。'
-          : manifest.formatVersion === 3
-            ? `这是 v0.3 的导出包（formatVersion 3），当前是 ${current}。老包只有**单一空间**的坐标，`
-              + '导进多空间模型会被当成「我的」那一组 —— 原作与项目坐标会被静默丢弃，那比报错糟得多。'
-            : `不认识的包版本：${manifest.formatVersion}（当前 ${current}）`,
-    )
+    throw new Error(`导出包版本 ${manifest.formatVersion} 与当前版本 ${EXPORT_FORMAT_VERSION} 不符；请用对应版本显式转换。`)
+  }
+  if (!Array.isArray(manifest.spaces) || !Array.isArray(manifest.axes) || !Array.isArray(manifest.entries)) {
+    throw new Error('导出包缺少当前版本必需的 spaces、axes 或 entries')
   }
 
   // ⚠️ **先建空间与坐标轴，再导条目。** 顺序反了会得到「有坐标但没轴定义」
   // 的数据 —— 那正是「看着成功、实则语义全丢」的状态。
   const spaceIdsByCode = new Map<string, string>()
-  for (const space of manifest.spaces ?? []) {
+  for (const space of manifest.spaces) {
     const existing = await findSpaceByCode(space.code)
     // ⚠️ 已存在就**复用**，不覆盖。本机的空间可能已经被编辑过（加了轴、改了
     // 描述），用包里的定义盖掉等于丢掉本机状态。
     spaceIdsByCode.set(space.code, existing?.id ?? (await createDesignSpace(space)).id)
   }
-  for (const axis of manifest.axes ?? []) {
+  for (const axis of manifest.axes) {
     const spaceId = spaceIdsByCode.get(axis.spaceCode)
     if (!spaceId) continue
     const existingAxes = await listDesignAxes(spaceId)
@@ -159,6 +147,9 @@ export async function importFrom(root: string) {
   const summary = { created: 0, reused: 0, missingImage: 0, byDomain: {} as Record<string, number> }
 
   for (const entry of manifest.entries) {
+    if (!entry.axisValuesBySpace || typeof entry.axisValuesBySpace !== 'object' || !Array.isArray(entry.tags)) {
+      throw new Error(`条目 ${entry.id ?? '未知'} 缺少 axisValuesBySpace 或 tags`)
+    }
     const existingLocalId = await resolveImportedId(entry.id)
     if (existingLocalId) {
       summary.reused += 1
@@ -168,6 +159,13 @@ export async function importFrom(root: string) {
     // ⚠️ domain 来自导入包，是不可信输入。认不出的 domain 直接跳过 ——
     // 硬塞会造出一条「domain 存在但没有扩展表」的数据，比不导更糟。
     if (!isDomainCode(entry.domain)) continue
+    if (!ENTRY_STATUSES.includes(entry.status as EntryStatus)) throw new Error(`无效条目状态：${entry.status}`)
+    for (const tag of entry.tags) {
+      if (typeof tag.confidence !== 'number' || !Number.isFinite(tag.confidence) || tag.confidence < 0 || tag.confidence > 1) {
+        throw new Error(`无效标签置信度：${tag.name}`)
+      }
+      if (tag.origin === 'system' && !tag.ruleId) throw new Error(`系统标签缺少规则：${tag.name}`)
+    }
 
     // 图片先落盘 —— 有图的才落。
     // ⚠️ imagePath 从 v0.2 起可空：没有图的条目照样导入，别因为缺图丢掉整条记录。
@@ -186,7 +184,7 @@ export async function importFrom(root: string) {
 
     // ⚠️ **坐标在 createEntry 之后单独写** —— 因为它按空间分组，而 createEntry
     // 只接受一个空间。逐空间写才不至于把「原作」与「我的」混成一组。
-    const mineScores = entry.scoresBySpace?.['mine'] ?? {}
+    const mineScores = entry.axisValuesBySpace['mine'] ?? {}
     // ⚠️ 只取该空间**实际定义过**的轴 —— 包里的坐标是不可信输入，塞一条
     // 不存在的轴会得到「有分数但界面上没有那一行」的幽灵数据。
     const mineAxes = new Set((await listDesignAxes(spaceIdsByCode.get('mine') ?? 'space-mine')).map((axis) => axis.key))
@@ -204,23 +202,18 @@ export async function importFrom(root: string) {
       imagePath: localPath,
       imageSource: entry.imageSource === 'paste' ? 'paste' : 'file',
       originalName: entry.originalName,
-      // ⚠️ observed 同时接受 notes：v3 的包里 notes 恒为空，但手工编辑过的
-      // 包可能有。observed 优先，两者都给时以 observed 为准。
-      observed: entry.observed || entry.notes || '',
-      read: entry.read ?? '',
-      worthwhileBecause: entry.worthwhileBecause ?? '',
-      // ⚠️ status 来自导入包，是不可信输入。不能直接 `as EntryStatus` 断言 ——
-      // createEntry 里的 assertStatus 只在字段存在时校验，传 undefined 就跳过了。
-      // 所以这里显式过滤：认得的才给，不认得的走默认 inbox。
-      status: ENTRY_STATUSES.includes(entry.status as EntryStatus) ? (entry.status as EntryStatus) : undefined,
-      taxonomy: Object.keys(mineValid).length > 0 ? mineValid : undefined,
-      taxonomySpaceId: 'space-mine',
+      observed: entry.observed,
+      read: entry.read,
+      worthwhileBecause: entry.worthwhileBecause,
+      status: entry.status as EntryStatus,
+      axisValues: Object.keys(mineValid).length > 0 ? mineValid : undefined,
+      axisSpaceId: 'space-mine',
       extension: entry.extension ?? undefined,
     })
     await rememberImportedId(entry.id, created.id)
 
     // 其余空间（原作 / 项目）逐个写。⚠️ 每个空间都要按它自己的轴表过滤。
-    for (const [code, scores] of Object.entries(entry.scoresBySpace ?? {})) {
+    for (const [code, scores] of Object.entries(entry.axisValuesBySpace)) {
       if (code === 'mine') continue // 已在 createEntry 里写掉
       const spaceId = spaceIdsByCode.get(code)
       if (!spaceId) continue // 空间没建出来（包坏了或本机已有同 code 的不同空间）
@@ -229,30 +222,29 @@ export async function importFrom(root: string) {
       for (const [key, value] of Object.entries(scores)) {
         if (axisKeys.has(key) && typeof value === 'number' && !Number.isNaN(value)) valid[key] = value
       }
-      if (Object.keys(valid).length > 0) await setTaxonomy(created.id, valid, spaceId)
+      if (Object.keys(valid).length > 0) await setAxisValues(created.id, valid, spaceId)
     }
 
     // ⚠️ tag 分两批挂：origin='system' 的走 attachSystemTag（要求 ruleId 非空，
     // 且保住 origin）。混在一起批量挂会把系统 tag 降级成 user —— origin 就白存了。
-    // ⚠️ group 同样来自导入包，是不可信输入：认得的才给，不认得的走空串。
-    const groups = new Map<string, TagGroup>()
-    for (const tag of entry.tags ?? []) {
-      groups.set(tag.name, isTagGroupKey(tag.group) ? tag.group : '')
-    }
-
-    const userNames = (entry.tags ?? []).filter((tag) => tag.origin !== 'system').map((tag) => tag.name)
+    const userNames = entry.tags.filter((tag) => tag.origin !== 'system').map((tag) => tag.name)
     if (userNames.length > 0) {
-      const resolved = await Promise.all(userNames.map((name) => findOrCreateTag(name, groups.get(name) ?? '')))
+      const resolved = await Promise.all(userNames.map((name) => findOrCreateTag(name)))
       const current = (await tagsForEntries([created.id])).get(created.id) ?? []
       const merged = [...current.map((item) => item.id)]
       for (const tag of resolved) if (!merged.includes(tag.id)) merged.push(tag.id)
       await setEntryTags(created.id, merged, true)
     }
-    for (const tag of entry.tags ?? []) {
+    for (const tag of entry.tags) {
       if (tag.origin === 'system' && tag.ruleId) {
-        // 系统 tag 也补group —— 它同样是 tag，命名空间对它一视同仁。
-        await attachSystemTag(created.id, tag.name, tag.ruleId, groups.get(tag.name) ?? '')
+        await attachSystemTag(created.id, tag.name, tag.ruleId)
       }
+    }
+    const savedTags = (await tagsForEntries([created.id])).get(created.id) ?? []
+    for (const tag of entry.tags) {
+      const saved = savedTags.find((item) => item.name === tag.name)
+      if (!saved) throw new Error(`导入标签关联失败：${tag.name}`)
+      await setEntryTagConfidence(created.id, saved.id, tag.confidence)
     }
 
     summary.created += 1
