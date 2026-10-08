@@ -7,7 +7,12 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build \
+# `npm run build` 会先跑 prepare-next，把 `.next` 链到 /tmp。那是本机
+# WorkBuddy 拦截 rename 的绕行，镜像里没有这个拦截。链出去之后，下面
+# `COPY .next` 拿到的是断链，构建产物不在这一层里。
+# public 可以没有（仓库里没有静态资源），但 COPY 要求源目录存在。
+RUN mkdir -p public \
+  && ./node_modules/.bin/next build \
   && npm prune --omit=dev
 
 FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS runner

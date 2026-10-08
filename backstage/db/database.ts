@@ -191,7 +191,14 @@ function ensureSchema(): void {
  */
 export function mediaRoot(): string {
   const configured = process.env.MEDIA_ROOT?.trim()
-  if (configured) return path.isAbsolute(configured) ? configured : path.join(process.cwd(), configured)
+  // ⚠️ 相对路径是 `path.join(cwd, 动态段)`。healthz 把这个函数打进 server bundle 后，
+  // Turbopack 会据此把整个仓库追进 server trace（镜像构建被撑大，甚至直接失败）。
+  // 这是运行时目录，不是要打包的项目文件。
+  if (configured) {
+    return path.isAbsolute(configured)
+      ? configured
+      : path.join(/* turbopackIgnore: true */ process.cwd(), configured)
+  }
   return path.join(process.cwd(), 'media')
 }
 
@@ -238,7 +245,7 @@ export function databaseFile(): string {
 
 export function mediaRootExists(): boolean {
   try {
-    return fs.statSync(mediaRoot()).isDirectory()
+    return fs.statSync(/* turbopackIgnore: true */ mediaRoot()).isDirectory()
   } catch {
     return false
   }
