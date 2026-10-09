@@ -4,12 +4,14 @@ import { nanoid } from 'nanoid'
 import { and, asc, desc, eq, inArray, like, notExists, or, sql } from 'drizzle-orm'
 import { getDatabase } from '@/backstage/db/database'
 import { entries, entryTags, entryAxisValues, importIdMap, monsterEntries, tags } from '@/backstage/db/schema'
-import { attachEntryTagsByName, findOrCreateTag, tagsForEntries } from './tag.service'
+import { attachEntryTagsByName, findOrCreateTag, setEntryTagConfidence, tagsForEntries } from './tag.service'
 import { listDesignAxes, listDesignSpaces } from './space.service'
+import { automaticTrainable, isLicenseKey, isTrainable, type LicenseKey, type Trainable } from '@/options/licensing'
+import { UNCLEAR_KEY } from '@/options/shared'
 import { ANALYSIS_STATUSES, ENTRY_STATUSES, isAnalysisStatus, isDomainCode, type AnalysisStatus, type DomainCode, type EntryDetail, type EntryStatus, type EntrySummary, type ImageSource, type MonsterExtension, type TagOrigin, type AxisKey } from '@/types/atlas'
 
 const MAX_NAME = 120
-const MAX_URL = 2000
+const MAX_SOURCE = 2000
 /** 观察与判断都要能写长 —— 但仍然有上限，防止误粘整篇文章进来。 */
 const MAX_TEXT = 8000
 
@@ -22,6 +24,8 @@ function mapEntry(
     ...row,
     domain: row.domain as DomainCode,
     status: row.status as EntryStatus,
+    license: row.license as LicenseKey,
+    trainable: row.trainable as Trainable,
     // ⚠️ 库里的值是文本，类型系统看不见它只有三个合法值 —— 所以这里
     // **兜底成 committed** 而不是断言。脏值当成「已定稿」比当成别的更安全？
     // 不对：当成 committed 会让未确认的数据参与筛选。所以兜底成 **draft** ——
@@ -54,19 +58,25 @@ function assertDomain(value: unknown): DomainCode {
   return raw
 }
 
-/** 来源必须只给 http/https —— 这个字段是强制的，所以要在写入口就挡住非法值。 */
-function assertSourceUrl(value: unknown): string {
-  const url = String(value ?? '').trim()
-  if (!url) throw new Error('必须填一个来源链接 —— 没有出处的东西不进 Atlas')
-  if (url.length > MAX_URL) throw new Error(`来源链接超过 ${MAX_URL} 字符`)
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    throw new Error('来源链接不是合法的 URL')
+/** Source is required, but can be a URL or a publication title. */
+function assertSource(value: unknown): string {
+  const source = String(value ?? '').trim()
+  if (!source) throw new Error('必须填写来源（URL 或出版物）')
+  if (source.length > MAX_SOURCE) throw new Error(`来源超过 ${MAX_SOURCE} 字符`)
+  return source
+}
+
+function assertLicense(value: unknown): LicenseKey {
+  if (!isLicenseKey(value)) throw new Error(`未知的许可证：${String(value)}`)
+  return value
+}
+
+function assertTrainable(value: unknown, license: LicenseKey): Trainable {
+  if (!isTrainable(value)) throw new Error(`未知的训练用途状态：${String(value)}`)
+  if (value === 'yes' && automaticTrainable(license) !== 'yes') {
+    throw new Error('手动允许训练请选 user-yes')
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('来源链接只能是 http 或 https')
-  return url
+  return value
 }
 
 function clip(value: unknown, max: number): string {
@@ -99,9 +109,10 @@ function assertImagePath(value: unknown): string {
 export type CreateEntryInput = {
   domain: DomainCode
   name?: string
-  sourceUrl: string
-  sourceTitle?: string
-  sourceGame?: string
+  source: string
+  author?: string
+  license?: LicenseKey
+  trainable?: Trainable
   /** 相对 media 根的路径。可空。 */
   imagePath?: string
   imageSource?: ImageSource
@@ -122,6 +133,7 @@ export type CreateEntryInput = {
    */
   analysisStatus?: AnalysisStatus
   tagNames?: string[]
+  tagConfidenceByName?: Record<string, number>
   /** 部分 Record，只写打过的维度。没给的维度不入库。 */
   axisValues?: Partial<Record<string, number>>
   /** ⭐ 坐标写到哪个空间。默认「我的」。 */
@@ -340,7 +352,8 @@ export async function listEntries(filter: ListFilter = {}): Promise<EntrySummary
         like(entries.observed, needle),
         like(entries.read, needle),
         like(entries.worthwhileBecause, needle),
-        like(entries.sourceGame, needle),
+        like(entries.source, needle),
+        like(entries.author, needle),
       ),
     )
   }
@@ -377,7 +390,7 @@ export async function countEntries(filter: ListFilter = {}): Promise<number> {
 /**
  * 采集入口。
  *
- * ⚠️ 强制字段只剩一项：sourceUrl。imagePath 从 v0.2 起可空 —— 通用化后
+ * ⚠️ 强制字段只剩一项：source。imagePath 从 v0.2 起可空 —— 通用化后
  * 必然有不以图为中心的采集类型。tags 与 axisValues **都不强制**。
  *
  * 这是 2026-10-06 的裁定：tag 强制会把「先存下来、标签回头补」变成
@@ -389,7 +402,9 @@ export async function countEntries(filter: ListFilter = {}): Promise<number> {
  */
 export async function createEntry(input: CreateEntryInput): Promise<EntrySummary> {
   const domain = assertDomain(input.domain)
-  const sourceUrl = assertSourceUrl(input.sourceUrl)
+  const source = assertSource(input.source)
+  const license = assertLicense(input.license ?? UNCLEAR_KEY)
+  const trainable = input.trainable === undefined ? automaticTrainable(license) : assertTrainable(input.trainable, license)
   const imagePath = assertImagePath(input.imagePath)
 
   const db = await getDatabase()
@@ -398,14 +413,20 @@ export async function createEntry(input: CreateEntryInput): Promise<EntrySummary
   const id = `${domain.slice(0, 2)}-${nanoid(10)}`
   // tags 可空 —— attachEntryTagsByName 传空数组会直接返回，不写关系行。
   const tagNames = (input.tagNames ?? []).map((item) => clip(item, 40)).filter(Boolean)
+  for (const [name, confidence] of Object.entries(input.tagConfidenceByName ?? {})) {
+    if (!tagNames.some((tag) => tag.toLowerCase() === name.toLowerCase()) || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+      throw new Error(`无效标签置信度：${name}`)
+    }
+  }
 
   await db.insert(entries).values({
     id,
     domain,
     name: clip(input.name, MAX_NAME),
-    sourceUrl,
-    sourceTitle: clip(input.sourceTitle, MAX_NAME),
-    sourceGame: clip(input.sourceGame, MAX_NAME),
+    source,
+    author: clip(input.author ?? UNCLEAR_KEY, MAX_NAME) || UNCLEAR_KEY,
+    license,
+    trainable,
     imagePath,
     imageSource: input.imageSource === 'paste' ? 'paste' : 'file',
     originalName: clip(input.originalName, MAX_NAME),
@@ -426,6 +447,10 @@ export async function createEntry(input: CreateEntryInput): Promise<EntrySummary
   // attachEntryTagsByName 是「只加不删」的合并语义 —— 它内部调
   // setEntryTags 时只替换 user 那一批，系统 tag 原样保留。
   await attachEntryTagsByName(id, tagNames)
+  for (const [name, confidence] of Object.entries(input.tagConfidenceByName ?? {})) {
+    const tag = await findOrCreateTag(name)
+    await setEntryTagConfidence(id, tag.id, confidence)
+  }
   await setAxisValues(id, input.axisValues ?? {}, input.axisSpaceId ?? 'space-mine')
   return getEntrySummary(id)
 }
@@ -436,9 +461,12 @@ export async function updateEntry(id: string, input: UpdateEntryInput): Promise<
   const updates: Partial<typeof entries.$inferInsert> = { updatedAt: new Date().toISOString() }
 
   if (input.name !== undefined) updates.name = clip(input.name, MAX_NAME)
-  if (input.sourceUrl !== undefined) updates.sourceUrl = assertSourceUrl(input.sourceUrl)
-  if (input.sourceTitle !== undefined) updates.sourceTitle = clip(input.sourceTitle, MAX_NAME)
-  if (input.sourceGame !== undefined) updates.sourceGame = clip(input.sourceGame, MAX_NAME)
+  if (input.source !== undefined) updates.source = assertSource(input.source)
+  if (input.author !== undefined) updates.author = clip(input.author, MAX_NAME) || UNCLEAR_KEY
+  const nextLicense = input.license !== undefined ? assertLicense(input.license) : current.license
+  if (input.license !== undefined) updates.license = nextLicense
+  if (input.trainable !== undefined) updates.trainable = assertTrainable(input.trainable, nextLicense)
+  else if (input.license !== undefined) updates.trainable = automaticTrainable(nextLicense)
   if (input.imagePath !== undefined) updates.imagePath = assertImagePath(input.imagePath)
   if (input.imageSource !== undefined) updates.imageSource = input.imageSource === 'paste' ? 'paste' : 'file'
   if (input.originalName !== undefined) updates.originalName = clip(input.originalName, MAX_NAME)

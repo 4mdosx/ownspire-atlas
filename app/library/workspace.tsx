@@ -128,8 +128,8 @@ export function LibraryWorkspace() {
           entry.observed,
           entry.read,
           entry.worthwhileBecause,
-          entry.sourceGame,
-          entry.sourceTitle,
+          entry.source,
+          entry.author,
           ...entry.tags.map((tag) => tag.name),
         ]
           .join(' ')

@@ -60,8 +60,10 @@ async function main(): Promise<void> {
 
   // ① 未打标：强制 tag 的反面 ——「先存下来、标签回头补」必须是可行的
   {
-    const untagged = await createEntry({ domain: creature, name: '无标条目', sourceUrl: src })
-    const tagged = await createEntry({ domain: creature, name: '有标条目', sourceUrl: src, tagNames: ['bird', 'plant'] })
+    const untagged = await createEntry({ domain: creature, name: '无标条目', source: src })
+    const tagged = await createEntry({ domain: creature, name: '有标条目', source: src, tagNames: ['bird', 'plant'] })
+    const weighted = await createEntry({ domain: creature, source: src, tagNames: ['weighted'], tagConfidenceByName: { weighted: 0.37 } })
+    check('新建时保存标签置信度', weighted.tags.find((tag) => tag.name === 'weighted')?.confidence === 0.37)
 
     check('无 tag 也能创建（tags 不强制）', untagged.tags.length === 0)
     check('有 tag 也能创建', tagged.tags.length === 2, tagged.tags.map((t) => t.name).join(' '))
@@ -97,7 +99,7 @@ async function main(): Promise<void> {
 
     check('findTagByName 大小写不敏感', (await findTagByName('BIRD')) !== null)
     check('未打标可与搜索叠加', (await listEntries({ untagged: true, q: '无标' })).length === 1)
-    check('手工新增先进入待 AI 处理', (await statusCounts()).pending_ai === 2, JSON.stringify(await statusCounts()))
+    check('手工新增先进入待 AI 处理', (await statusCounts()).pending_ai === 3, JSON.stringify(await statusCounts()))
     await setEntryStatus(tagged.id, 'inbox')
     check('待 AI 处理后可进入 Inbox', (await getEntryDetail(tagged.id)).status === 'inbox')
     await setEntryStatus(tagged.id, 'reviewed')
@@ -112,7 +114,7 @@ async function main(): Promise<void> {
 
   // ② origin 存在的全部理由：用户编辑标签时**不能把系统 tag 抹掉**
   {
-    const entry = await createEntry({ domain: creature, name: '来源标记', sourceUrl: src, tagNames: ['blob'] })
+    const entry = await createEntry({ domain: creature, name: '来源标记', source: src, tagNames: ['blob'] })
     await attachSystemTag(entry.id, 'boss', 'proj:alpha')
     await attachSystemTag(entry.id, 'elite', 'proj:beta')
 
@@ -130,7 +132,7 @@ async function main(): Promise<void> {
     check('按 ruleId 精确查', (await listEntries({ origin: 'system', ruleId: 'proj:beta' })).some((e) => e.id === entry.id))
 
     // 同一个 tag 在不同条目上origin 可以不同 —— origin 挂在关联上，不在词上
-    const other = await createEntry({ domain: creature, name: '另一条', sourceUrl: src, tagNames: ['boss'] })
+    const other = await createEntry({ domain: creature, name: '另一条', source: src, tagNames: ['boss'] })
     const otherTag = (await getEntryDetail(other.id)).tags.find((t) => t.name === 'boss')
     check('同一 tag 在不同条目 origin 可不同', otherTag?.origin === 'user', `origin=${otherTag?.origin}`)
 
@@ -154,7 +156,7 @@ async function main(): Promise<void> {
 
   // ④ 「没打过分」≠「打了 0 分」—— **这是 sparse 表存在的全部理由**
   {
-    const entry = await createEntry({ domain: creature, name: '打分测试', sourceUrl: src })
+    const entry = await createEntry({ domain: creature, name: '打分测试', source: src })
     await setAxisValues(entry.id, { visualMass: 0.8, shapeLanguage: 0.4 })
     const detail = await getEntryDetail(entry.id)
     check('axisValues 只存给了的维度（sparse）', Object.keys(detail.axisValues).length === 2, JSON.stringify(detail.axisValues))
@@ -184,14 +186,14 @@ async function main(): Promise<void> {
 
   // ⑤ domain 分流 + 媒体路径
   {
-    const entry = await createEntry({ domain: creature, name: '分流测试', sourceUrl: src })
+    const entry = await createEntry({ domain: creature, name: '分流测试', source: src })
     check('creature 条目自动建扩展行', (await getEntryDetail(entry.id)).extension !== null)
     check('domain=creature 筛出条目', (await listEntries({ domain: creature })).some((e) => e.id === entry.id))
     check('domain=未知名返回空而不报错', (await listEntries({ domain: 'nope' as never })).length === 0)
     check('换到同 domain 是幂等的', (await changeDomain(entry.id, creature)).domain === creature)
 
     // imagePath 从 v0.2 起可空 —— 没有图的条目照样能存（缺失图不该阻塞采集）
-    const noImage = await createEntry({ domain: creature, name: '无图条目', sourceUrl: src })
+    const noImage = await createEntry({ domain: creature, name: '无图条目', source: src })
     check('没有图片也能创建', noImage.imagePath === '', `imagePath="${noImage.imagePath}"`)
 
     // ⚠️ **路径逃逸必须在写入侧被拒**。`imagePath` 来自用户输入（粘贴、
@@ -206,10 +208,28 @@ async function main(): Promise<void> {
     }
 
     try {
-      await createEntry({ domain: creature, name: '无来源', sourceUrl: '' })
+      await createEntry({ domain: creature, name: '无来源', source: '' })
       check('来源应必填（它是唯一的硬约束）', false, '居然建成功了')
     } catch (error) {
       check('来源应必填（它是唯一的硬约束）', true, error instanceof Error ? error.message : '')
+    }
+
+    const publication = await createEntry({ domain: creature, source: 'Design Studies, Vol. 12' })
+    check('出版物可作为来源', publication.source === 'Design Studies, Vol. 12')
+    check('出版物作者和许可默认为 unclear', publication.author === 'unclear' && publication.license === 'unclear' && publication.trainable === 'unclear')
+    const web = await createEntry({ domain: creature, source: 'https://example.com/unlicensed' })
+    check('网页采集默认为未核实授权', web.license === 'unclear' && web.trainable === 'unclear')
+    const cc = await updateEntry(web.id, { license: 'cc-by-4.0' })
+    check('更改许可自动更新训练状态', cc.license === 'cc-by-4.0' && cc.trainable === 'yes')
+    const restricted = await updateEntry(web.id, { license: 'cc-by-nc-4.0' })
+    check('受限许可自动关闭训练', restricted.trainable === 'no')
+    const overridden = await updateEntry(web.id, { trainable: 'user-yes' })
+    check('用户可手动覆盖训练状态', overridden.trainable === 'user-yes')
+    try {
+      await updateEntry(web.id, { trainable: 'yes' })
+      check('受限许可不可伪装成自动 Yes', false)
+    } catch {
+      check('受限许可不可伪装成自动 Yes', true)
     }
   }
 
@@ -296,7 +316,7 @@ async function main(): Promise<void> {
     const split = await createEntry({
       domain: creature,
       name: '观察与判断',
-      sourceUrl: 'https://example.com/split',
+      source: 'https://example.com/split',
       observed: '攻击前身体膨胀约 0.5 秒',
       read: '用 silhouette 变化给玩家 telegraph',
       worthwhileBecause: '极简蓄力建立高 commitment',
@@ -324,7 +344,7 @@ async function main(): Promise<void> {
     const direct = await createEntry({
       domain: creature,
       name: '当前字段',
-      sourceUrl: 'https://example.com/direct',
+      source: 'https://example.com/direct',
       observed: '只通过 observed 写入',
     })
     check('observed 直接写入', direct.observed === '只通过 observed 写入', direct.observed)
@@ -366,7 +386,7 @@ async function main(): Promise<void> {
       check('重名 tag 应被拒', true, error instanceof Error ? error.message : '')
     }
 
-    const linked = await createEntry({ domain: creature, name: '置信度', sourceUrl: src, tagNames: ['animal:cat'] })
+    const linked = await createEntry({ domain: creature, name: '置信度', source: src, tagNames: ['animal:cat'] })
     const { setEntryTagConfidence } = tagService
     await setEntryTagConfidence(linked.id, tagged.id, 0.42)
     check('关联置信度持久化', (await getEntryDetail(linked.id)).tags.find((tag) => tag.id === tagged.id)?.confidence === 0.42)
@@ -404,7 +424,7 @@ async function main(): Promise<void> {
       anchors: ['微型', '标准', '大型', '巨型'],
     })
 
-    const subject = await createEntry({ domain: creature, name: '同名轴测试', sourceUrl: 'https://example.com/dual' })
+    const subject = await createEntry({ domain: creature, name: '同名轴测试', source: 'https://example.com/dual' })
     const shared = 'visualMass'
     await setAxisValues(subject.id, { [shared]: 0.2 }, mine.id)
     await setAxisValues(subject.id, { [shared]: 0.8 }, source.id)
@@ -458,13 +478,13 @@ async function main(): Promise<void> {
   // 只 4 条 —— 那条原则的要点就这四个：默认 committed、显式 draft、
   // 非法值被拒、改后生效。刻意不铺开测。
   {
-    const manual = await createEntry({ domain: creature, name: '手工采集', sourceUrl: 'https://example.com/manual' })
+    const manual = await createEntry({ domain: creature, name: '手工采集', source: 'https://example.com/manual' })
     check('默认是 committed（v0 全手工填）', manual.analysisStatus === 'committed', manual.analysisStatus)
 
     const machine = await createEntry({
       domain: creature,
       name: '机器提案',
-      sourceUrl: 'https://example.com/machine',
+      source: 'https://example.com/machine',
       analysisStatus: 'draft',
     })
     check('机器填的可显式标为 draft', machine.analysisStatus === 'draft', machine.analysisStatus)
@@ -473,7 +493,7 @@ async function main(): Promise<void> {
       await createEntry({
         domain: creature,
         name: '非法状态',
-        sourceUrl: 'https://example.com/bad',
+        source: 'https://example.com/bad',
         analysisStatus: 'guessed' as never,
       })
       check('非法 analysisStatus 应被拒', false, '居然建成功了')
@@ -502,6 +522,119 @@ async function main(): Promise<void> {
     check('导入保留关联置信度', (await listEntries({})).filter((entry) => entry.tags.some((tag) => tag.confidence === 0.42)).length >= 2)
     check('同一包重复导入不重复创建', second.created === 0 && second.reused === exported.count)
   }
+
+  // ---------------------------------------------------------------- PIN 与退避
+  console.log('\nPIN 与指数退避')
+  const pin = await import('@/backstage/atlas/pin.service')
+  const backoff = await import('@/lib/backoff')
+  const auth = await import('@/backstage/atlas/auth.service')
+  // ⚠️ atlas 的 pin.* 全部是 async —— 数据层是 drizzle（`getDatabase()` 是 async），
+  // 而 raven/shrine 是同步的原生 SQL。这里少一个 await 就会拿到 Promise 而不报错，
+  // 症状是「校验永远返回 false」，极难定位。
+  type Signal = import('@/lib/backoff').AttackSignal
+
+  const pinHash = await pin.hashPin('1234')
+  check('PIN 散列是六段 scrypt', pinHash.startsWith('scrypt$') && pinHash.split('$').length === 6, pinHash.slice(0, 20))
+  check('正确 PIN 通过', await pin.verifyPinHash('1234', pinHash))
+  check('错误 PIN 不通过', !(await pin.verifyPinHash('9999', pinHash)))
+  let malformedThrew = false
+  try {
+    for (const bad of ['scrypt$1$2$3$4$5', 'scrypt$16384$8$1$!!$!!', '', 'nope', 'scrypt$3$8$1$aa$bb']) {
+      if (await pin.verifyPinHash('1234', bad)) {
+        malformedThrew = true
+        break
+      }
+    }
+  } catch {
+    malformedThrew = true
+  }
+  check('畸形散列返回 false 而不是抛错', !malformedThrew)
+
+  check('初始未设 PIN', !(await pin.isPinConfigured()))
+  const epoch = await pin.savePin('1234')
+  check('savePin 返回非空 epoch', epoch.length > 0)
+  check('已设 PIN', await pin.isPinConfigured())
+  check('epoch 可读回', (await pin.getPinEpoch()) === epoch)
+  check('verifyStoredPin 正确', await pin.verifyStoredPin('1234'))
+  check('verifyStoredPin 错误', !(await pin.verifyStoredPin('0000')))
+
+  // ⚠️ 重复写同一个 key 走 onConflictDoUpdate，不是「先查后写」——
+  // 后者在并发下两个请求都查不到、都走 INSERT，其中一个撞主键。
+  await pin.savePin('5678')
+  check('重复写 settings 不报错且 epoch 变化', (await pin.getPinEpoch()) !== epoch)
+  check('旧 PIN 不再通过', !(await pin.verifyStoredPin('1234')))
+  check('新 PIN 通过', await pin.verifyStoredPin('5678'))
+
+  let previous = 0
+  let monotone = true
+  for (let n = 1; n <= 9; n += 1) {
+    const ms = backoff.backoffMs(n)
+    if (n <= 9 && ms <= previous) monotone = false
+    if (ms > backoff.MAX_BACKOFF_MS) monotone = false
+    previous = ms
+  }
+  check('锁定时长单调递增且不超 24h', monotone)
+  check('第 9 次起封顶 24 小时', backoff.backoffMs(9) === backoff.MAX_BACKOFF_MS)
+  check('极大失败次数安全封顶', backoff.backoffMs(1e9) === backoff.MAX_BACKOFF_MS)
+
+  auth.resetRateLimits()
+  auth.assertNotRateLimited('ip-verify')
+  auth.recordLoginFailure('ip-verify')
+  let lockedName = ''
+  try {
+    auth.assertNotRateLimited('ip-verify')
+  } catch (error) {
+    lockedName = error instanceof Error ? error.name : ''
+  }
+  check('第一次失败即锁定', lockedName === 'RateLimitedError', lockedName)
+  auth.assertNotRateLimited('other-ip')
+  check('不同 IP 互不影响', true)
+  auth.recordLoginSuccess('ip-verify')
+  auth.assertNotRateLimited('ip-verify')
+  check('成功后归零', backoff.failureCount('ip-verify') === 0)
+
+  backoff.resetAll()
+  backoff.resetSignals()
+  let burst: Signal = { suspicious: false, reason: 'none', failures: 0, lockedKeys: 0 }
+  for (let i = 0; i < 5; i += 1) burst = backoff.recordFailureSignal('attacker')
+  check('单 IP 爆发被识别', burst.suspicious && burst.reason === 'burst', JSON.stringify(burst))
+  check('信号文案带来源', backoff.describeSignal(burst, 'attacker').includes('attacker'))
+
+  backoff.resetAll()
+  backoff.resetSignals()
+  for (const key of ['s1', 's2', 's3', 's4']) {
+    backoff.recordFailure(key)
+    backoff.recordFailureSignal(key)
+  }
+  let distributed: Signal = { suspicious: false, reason: 'none', failures: 0, lockedKeys: 0 }
+  for (const key of ['s5', 's6']) distributed = backoff.recordFailureSignal(key)
+  check('分布式扫描被识别', distributed.suspicious && distributed.reason === 'distributed', JSON.stringify(distributed))
+
+  backoff.resetAll()
+  backoff.resetSignals()
+  let quiet: Signal = { suspicious: false, reason: 'none', failures: 0, lockedKeys: 0 }
+  for (let i = 0; i < 3; i += 1) quiet = backoff.recordFailureSignal('normal-user')
+  check('手滑 3 次不误报', !quiet.suspicious)
+
+  auth.resetRateLimits()
+  check('已设 PIN 后 setup 被拒', !(await auth.setupPin({ pin: '1111', confirmPin: '1111' }, 'ip-s1')).ok)
+  check('两次不一致被拒', !(await auth.setupPin({ pin: '1111', confirmPin: '2222' }, 'ip-s2')).ok)
+  check('当前 PIN 错时改 PIN 被拒', !(await auth.updatePin({ currentPin: '0000', pin: '3333', confirmPin: '3333' }, 'ip-u1')).ok)
+  check('错 PIN 解锁失败', !(await auth.loginWithPin({ pin: '0000' }, 'ip-l1')).ok)
+  auth.resetRateLimits()
+  const previousSecret = process.env.SESSION_SECRET
+  process.env.SESSION_SECRET = 'verify-secret-must-be-long-enough'
+  const good = await auth.loginWithPin({ pin: '5678' }, 'ip-good')
+  check('正确 PIN 解锁成功', good.ok, good.ok ? '' : JSON.stringify(good.errors))
+  process.env.SESSION_SECRET = previousSecret
+
+  // 收尾：清掉 PIN 与退避状态。不清的话下一轮会带着它跑 ——
+  // atlas 的库文件带时间戳所以不会跨次残留，但退避是**进程级**的，必须显式清。
+  await pin.clearStoredPin()
+  auth.resetRateLimits()
+  backoff.resetAll()
+  backoff.resetSignals()
+  check('收尾后回到未设 PIN', !(await pin.isPinConfigured()))
 
   await db.closeDatabase()
   fs.rmSync(`/tmp/atlas-verify-${stamp}.db`, { force: true })

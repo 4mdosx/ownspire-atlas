@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { drizzle, type NodeSQLiteDatabase } from 'drizzle-orm/node-sqlite'
 // types/atlas.ts 提供首次建库种子；运行时轴定义只从 design_axes 读取。
 import { CREATURE_AXIS_SEEDS, CREATURE_AXIS_GROUPS } from '@/types/atlas'
+import { UNCLEAR_KEY } from '@/options/shared'
 
 export type AppDatabase = NodeSQLiteDatabase
 
@@ -68,6 +69,7 @@ function ensureSchema(): void {
   const entryTagColumns = sqlite().prepare('PRAGMA table_info(entry_tags)').all() as Array<{ name: string }>
   const freshDatabase = entryColumns.length === 0
   if (oldTable || entryColumns.some((column) => column.name === 'notes') ||
+      entryColumns.some((column) => column.name === 'sourceUrl') ||
       tagColumns.some((column) => column.name === 'groupName') ||
       (entryTagColumns.length > 0 && !entryTagColumns.some((column) => column.name === 'confidence'))) {
     throw new Error('检测到旧版数据库结构。请先执行显式迁移，数据库未被修改。')
@@ -78,9 +80,10 @@ function ensureSchema(): void {
       id TEXT PRIMARY KEY,
       domain TEXT NOT NULL,
       name TEXT NOT NULL DEFAULT '',
-      sourceUrl TEXT NOT NULL,
-      sourceTitle TEXT NOT NULL DEFAULT '',
-      sourceGame TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL,
+      author TEXT NOT NULL DEFAULT '${UNCLEAR_KEY}',
+      license TEXT NOT NULL DEFAULT '${UNCLEAR_KEY}',
+      trainable TEXT NOT NULL DEFAULT '${UNCLEAR_KEY}' CHECK (trainable IN ('yes', 'no', '${UNCLEAR_KEY}', 'user-yes')),
       imagePath TEXT NOT NULL DEFAULT '',
       imageSource TEXT NOT NULL DEFAULT 'file',
       originalName TEXT NOT NULL DEFAULT '',
@@ -156,6 +159,20 @@ function ensureSchema(): void {
     CREATE INDEX IF NOT EXISTS entries_created_idx ON entries(createdAt);
     CREATE INDEX IF NOT EXISTS entries_domain_idx ON entries(domain, createdAt);
     CREATE INDEX IF NOT EXISTS entry_axis_values_idx ON entry_axis_values(spaceId, axisKey, value);
+
+    -- 键值设置表。PIN 的 scrypt 散列与 epoch 落在这里（backstage/atlas/pin.service.ts）。
+    --
+    -- 为什么 PIN 不写在环境变量里：它是**运行期第一次访问时**由用户在浏览器里
+    -- 设定的，而环境变量必须在第一次访问**之前**就存在 —— 「首次设置」这件事
+    -- 本身没法用预置配置表达。附带好处：它不会跟着部署配置进版本库、被 diff、
+    -- 在构建日志里露面。
+    --
+    -- ⚠️ 这是**加表**，不是改表：已有库上 CREATE TABLE IF NOT EXISTS 直接补建，
+    -- 不碰任何现存数据，也不会让上面那些旧结构检查失败。
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `)
 
   if (freshDatabase) {

@@ -1,16 +1,19 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { ExternalLink, Trash2, X } from 'lucide-react'
+import { Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input, Textarea } from '@/components/ui/input'
 import { AxisRow } from './axis-control'
 import { SharpImage, UPSCALE_CAP_DETAIL } from './sharp-image'
+import { SourceFields } from './source-fields'
+import { UNCLEAR_KEY } from '@/options/shared'
 import { domainOf, STATUS_LABEL, type DesignAxis, type DesignSpace, type EntryDetail, type EntryStatus } from '@/types/atlas'
 
-type DetailTab = 'basic' | 'tags' | 'axis' | 'analysis'
+type DetailTab = 'basic' | 'source' | 'tags' | 'axis' | 'analysis'
 const DETAIL_TABS: { id: DetailTab; label: string }[] = [
   { id: 'basic', label: '基本信息' },
+  { id: 'source', label: '来源' },
   { id: 'tags', label: 'Tags' },
   { id: 'axis', label: 'Axis' },
   { id: 'analysis', label: 'Design Analysis' },
@@ -227,25 +230,17 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
             ))}
           </div>
 
-          <section>
-            <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">来源</h3>
-            <Input
-              aria-label="来源链接"
-              value={draft.sourceUrl}
-              onChange={(event) => setDraft({ ...draft, sourceUrl: event.target.value })}
-              onBlur={() => draft.sourceUrl !== entry.sourceUrl && void patch({ sourceUrl: draft.sourceUrl })}
-              className="h-8 text-xs"
-            />
-            <div className="mt-2 flex gap-2">
-              <Input aria-label="来源标题" placeholder="来源标题" value={draft.sourceTitle} onChange={(event) => setDraft({ ...draft, sourceTitle: event.target.value })} onBlur={() => draft.sourceTitle !== entry.sourceTitle && void patch({ sourceTitle: draft.sourceTitle })} className="h-8 text-xs" />
-              <Input aria-label="来源游戏" placeholder="来源" value={draft.sourceGame} onChange={(event) => setDraft({ ...draft, sourceGame: event.target.value })} onBlur={() => draft.sourceGame !== entry.sourceGame && void patch({ sourceGame: draft.sourceGame })} className="h-8 w-32 text-xs" />
-            </div>
-            <a href={draft.sourceUrl} target="_blank" rel="noreferrer" className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
-              <ExternalLink className="size-3" />
-              打开来源
-            </a>
-          </section>
           </div>
+
+          <section role="tabpanel" id="entry-panel-source" aria-labelledby="entry-tab-source" hidden={tab !== 'source'}>
+            <SourceFields source={draft.source} author={draft.author} license={draft.license} trainable={draft.trainable}
+              onSourceChange={(source) => setDraft((current) => ({ ...current, source }))}
+              onAuthorChange={(author) => setDraft((current) => ({ ...current, author }))}
+              onLicenseChange={(license) => void patch({ license })}
+              onTrainableChange={(trainable) => void patch({ trainable })}
+              onSourceCommit={() => { if (draft.source !== entry.source) void patch({ source: draft.source }) }}
+              onAuthorCommit={() => { if (draft.author !== entry.author) void patch({ author: draft.author.trim() || UNCLEAR_KEY }) }} />
+          </section>
 
           {/*
             ⭐⭐ 设计空间 —— 一个 entry 在每个空间下各有一组独立坐标。
@@ -292,13 +287,14 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
               </p>
             ) : (
               <>
-                <p className="mb-1 text-[10px] text-muted-foreground">
+                <p className="mb-1 text-xs leading-relaxed text-muted-foreground">
                   点档位词直接定档，星星微调。全灰 = 还没想好（不等于 0 分）。
                   <span className="ml-1">改分随时可以 —— 那是判断变了，不是记错了。</span>
                 </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {[...axisGroups.entries()].map(([groupKey, groupAxes]) => (
-                  <div key={groupKey || 'ungrouped'} className="mt-2 rounded-md border px-3 pb-1 pt-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                  <div key={groupKey || 'ungrouped'} className="rounded-md border px-3 pb-1 pt-2">
+                    <p className="text-sm font-semibold text-foreground">
                       {groupKey || '未分组'}
                     </p>
                     <div className="divide-y">
@@ -323,6 +319,7 @@ export function EntryDrawer({ entry, onClose, onChange, onDeleted }: {
                     </div>
                   </div>
                 ))}
+                </div>
               </>
             )}
           </section>

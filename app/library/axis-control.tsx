@@ -96,7 +96,7 @@ export function AxisControl({
                   if (target !== null) onChange(target)
                 }}
                 className={cn(
-                  'rounded-full border px-1.5 py-px text-[10px] transition-colors',
+                  'rounded-full border px-1.5 py-px text-xs transition-colors',
                   active
                     ? 'border-transparent bg-primary text-primary-foreground'
                     : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground',
@@ -191,10 +191,10 @@ export function AxisRow({
 }) {
   const currentAnchor = value !== undefined ? scoreToAnchor(dimension, value) : null
   return (
-    <div className="space-y-1 py-2">
+    <div className="space-y-1.5 py-2">
       <div className="flex items-baseline justify-between gap-2">
-        <p className="text-xs font-medium">
-          {dimension.labelZh} <span className="text-[11px] font-normal text-muted-foreground">{dimension.labelEn}</span>
+        <p className="text-sm font-medium">
+          {dimension.labelZh} <span className="text-xs font-normal text-muted-foreground">{dimension.labelEn}</span>
         </p>
         {value !== undefined && (
           <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
@@ -209,7 +209,7 @@ export function AxisRow({
         onClear={onClear}
         showAnchors={showAnchors}
       />
-      <p className="text-[10px] text-muted-foreground">{dimension.hintZh}</p>
+      <p className="text-sm leading-relaxed text-muted-foreground">{dimension.hintZh}</p>
     </div>
   )
 }

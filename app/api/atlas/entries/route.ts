@@ -52,9 +52,10 @@ export async function POST(request: NextRequest) {
     const entry = await createEntry({
       domain: body.domain,
       name: body.name,
-      sourceUrl: body.sourceUrl,
-      sourceTitle: body.sourceTitle,
-      sourceGame: body.sourceGame,
+      source: body.source,
+      author: body.author,
+      license: body.license,
+      trainable: body.trainable,
       imagePath: body.imagePath,
       imageSource: body.imageSource as ImageSource,
       originalName: body.originalName,
@@ -63,6 +64,7 @@ export async function POST(request: NextRequest) {
       worthwhileBecause: body.worthwhileBecause,
       status: body.status,
       tagNames: Array.isArray(body.tagNames) ? body.tagNames : [],
+      tagConfidenceByName: body.tagConfidenceByName && typeof body.tagConfidenceByName === 'object' && !Array.isArray(body.tagConfidenceByName) ? body.tagConfidenceByName : undefined,
       axisValues: body.axisValues && typeof body.axisValues === 'object' ? body.axisValues : undefined,
       extension: body.extension && typeof body.extension === 'object' ? body.extension : undefined,
     })

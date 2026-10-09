@@ -79,9 +79,9 @@ export function EntryGrid({ entries, selectedId, onSelect, size = 'sm' }: {
                     ⚠️ 副行放来源而不是 tag：列表是「读」的场景，来源是
                     「这条从哪来」的第一顺位信息，tag 在图墙里已经看得到。
                   */}
-                  {entry.sourceGame || entry.sourceTitle ? (
+                  {entry.source ? (
                     <span className="block truncate text-[10px] text-muted-foreground">
-                      {entry.sourceGame || entry.sourceTitle}
+                      {entry.source}
                     </span>
                   ) : null}
                 </span>

@@ -68,7 +68,7 @@ sqlite3 local.db "SELECT count(*) FROM entries"
 
 1. **平表 + 视图，不是目录树。** Inbox / Catalog / Detail 是同一张表的三个筛选条件。加一个 `status` 值应该是「多一个按钮」，不是「迁移一次目录」。
 
-2. **强制字段只有 `sourceUrl` 一项。** tags 和 axis values 全部可空。Atlas 首先是采集系统，不是填写调查问卷。**欠账用「未打标」视图收口，不用纪律。**
+2. **强制字段只有 `source` 一项（URL 或出版物）。** tags 和 axis values 全部可空。Atlas 首先是采集系统，不是填写调查问卷。**欠账用「未打标」视图收口，不用纪律。**
 
 3. **当前 Axis 定义以 `design_axes` 表为准。** `types/atlas.ts` 的六根轴仅用于新库首次播种；写入校验读取数据库中的轴。当前 domain 列表仍是代码常量。
 

@@ -16,7 +16,7 @@ import type { DomainCode, EntryTag, MonsterExtension } from '@/types/atlas'
  *   media/<relative>   ← 图片本体
  * ```
  *
- * formatVersion 6 carries `axisValuesBySpace`, `spaces`, `axes`, and tag confidence using only
+ * formatVersion 7 carries source rights fields, Axis data, and tag confidence using only
  * current field names. Older formats require explicit conversion.
  *
  * ⚠️ **为什么必须带上轴的定义**：坐标是 0–1 的浮点数，不带档位词的话
@@ -25,7 +25,7 @@ import type { DomainCode, EntryTag, MonsterExtension } from '@/types/atlas'
  *
  * 导入只接受当前格式，避免在读入时猜测历史字段的含义。
  */
-export const EXPORT_FORMAT_VERSION = 6
+export const EXPORT_FORMAT_VERSION = 7
 
 export type ExportTag = {
   name: string
@@ -61,9 +61,10 @@ export type ExportEntry = {
   id: string
   domain: DomainCode
   name: string
-  sourceUrl: string
-  sourceTitle: string
-  sourceGame: string
+  source: string
+  author: string
+  license: string
+  trainable: string
   imagePath: string
   imageSource: string
   originalName: string

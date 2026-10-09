@@ -6,6 +6,7 @@ import { attachSystemTag, findOrCreateTag, setEntryTagConfidence, setEntryTags, 
 import { createDesignAxis, createDesignSpace, findSpaceByCode, listDesignAxes, listDesignSpaces } from './space.service'
 import { exportStamp, EXPORT_FORMAT_VERSION, toExportTag, writeExport, type ExportAxis, type ExportEntry, type ExportManifest } from './export.service'
 import { ENTRY_STATUSES, isDomainCode, type DomainCode, type EntryStatus } from '@/types/atlas'
+import { isLicenseKey, isTrainable } from '@/options/licensing'
 
 function toExportEntry(
   entry: Awaited<ReturnType<typeof entriesOrderedById>>[number],
@@ -15,9 +16,10 @@ function toExportEntry(
     id: entry.id,
     domain: entry.domain,
     name: entry.name,
-    sourceUrl: entry.sourceUrl,
-    sourceTitle: entry.sourceTitle,
-    sourceGame: entry.sourceGame,
+    source: entry.source,
+    author: entry.author,
+    license: entry.license,
+    trainable: entry.trainable,
     imagePath: entry.imagePath,
     imageSource: entry.imageSource,
     originalName: entry.originalName,
@@ -160,6 +162,7 @@ export async function importFrom(root: string) {
     // 硬塞会造出一条「domain 存在但没有扩展表」的数据，比不导更糟。
     if (!isDomainCode(entry.domain)) continue
     if (!ENTRY_STATUSES.includes(entry.status as EntryStatus)) throw new Error(`无效条目状态：${entry.status}`)
+    if (!isLicenseKey(entry.license) || !isTrainable(entry.trainable)) throw new Error(`无效来源许可：${entry.id}`)
     for (const tag of entry.tags) {
       if (typeof tag.confidence !== 'number' || !Number.isFinite(tag.confidence) || tag.confidence < 0 || tag.confidence > 1) {
         throw new Error(`无效标签置信度：${tag.name}`)
@@ -196,9 +199,10 @@ export async function importFrom(root: string) {
     const created = await createEntry({
       domain: entry.domain,
       name: entry.name,
-      sourceUrl: entry.sourceUrl,
-      sourceTitle: entry.sourceTitle,
-      sourceGame: entry.sourceGame,
+      source: entry.source,
+      author: entry.author,
+      license: entry.license,
+      trainable: entry.trainable,
       imagePath: localPath,
       imageSource: entry.imageSource === 'paste' ? 'paste' : 'file',
       originalName: entry.originalName,

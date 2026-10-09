@@ -1,4 +1,5 @@
 import { integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core'
+import { UNCLEAR_KEY } from '@/options/shared'
 
 /**
  * v0.2 数据模型：顶层 entries + 按 domain 分流的扩展表。
@@ -26,10 +27,11 @@ export const entries = sqliteTable('entries', {
 
   name: text('name').notNull().default(''),
 
-  // 来源。sourceUrl 强制 —— 没有出处的东西不进 Atlas。
-  sourceUrl: text('sourceUrl').notNull(),
-  sourceTitle: text('sourceTitle').notNull().default(''),
-  sourceGame: text('sourceGame').notNull().default(''),
+  // 来源可以是 URL 或出版物。许可与训练用途另存，不从 URL 推断授权。
+  source: text('source').notNull(),
+  author: text('author').notNull().default(UNCLEAR_KEY),
+  license: text('license').notNull().default(UNCLEAR_KEY),
+  trainable: text('trainable').notNull().default(UNCLEAR_KEY),
 
   // 资产。imagePath 是相对 media 根的路径，不是绝对路径。
   imagePath: text('imagePath').notNull().default(''),
@@ -271,4 +273,20 @@ export const designAxes = sqliteTable('design_axes', {
   sortOrder: integer('sortOrder').notNull().default(0),
   createdAt: text('createdAt').notNull(),
   updatedAt: text('updatedAt').notNull(),
+})
+
+/**
+ * 键值设置表。PIN 的 scrypt 散列与 epoch 落在这里（`backstage/atlas/pin.service.ts`）。
+ *
+ * 为什么 PIN 不写在环境变量里：它是**运行期第一次访问时**由用户在浏览器里
+ * 设定的，而环境变量必须在第一次访问**之前**就存在 —— 「首次设置」这件事
+ * 本身没法用预置配置表达。附带好处：它不会跟着部署配置进版本库、被 diff、
+ * 在构建日志里露面。
+ *
+ * ⚠️ 这是**加表**，不是改表：已有库上 CREATE TABLE IF NOT EXISTS 直接补建，
+ * 不碰任何现存数据，也不会让上面那些旧结构检查失败。
+ */
+export const settings = sqliteTable('settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
 })

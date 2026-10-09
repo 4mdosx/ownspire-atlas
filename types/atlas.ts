@@ -242,8 +242,8 @@ export type AxisGroupSeedDef = {
  * （它让人读出什么）。分开是因为它们回答的是两个不同的问题 ——
  * 而「一个 domain 只研究一种创作问题」那条原则，在 domain 内部同样适用。
  *
- * · 形态：体量 / 比例 / 形体语言 / 视觉复杂度 —— 都是「客观可见的形状」
- * · 可读性：熟悉度 / 气质 —— 都是「它让人读出什么」，与形状有关但不是形状
+ * · 形态：体量 / 比例 / 形体语言
+ * · 可读性：符号化 / 直觉复杂度 / 气质
  */
 export const CREATURE_AXIS_GROUPS: readonly AxisGroupSeedDef[] = [
   { key: 'form', labelZh: '形态', labelEn: 'Form', hintZh: '它长什么样 —— 客观可见的形状' },
@@ -279,7 +279,7 @@ export const CREATURE_AXIS_SEEDS: readonly AxisSeedDef[] = [
     labelEn: 'Visual Mass',
     group: 'form',
     anchors: ['weightless', 'slight', 'solid', 'heavy', 'massive'],
-    hintZh: '画面上占多满 —— 注意是**视觉**重量，不是实际体积',
+    hintZh: '画面上占多满 —— 注意是视觉重量，不是实际体积',
   },
   {
     key: 'proportion',
@@ -298,20 +298,20 @@ export const CREATURE_AXIS_SEEDS: readonly AxisSeedDef[] = [
     hintZh: '基本形状倾向。圆 = 可亲，硬边 = 机械/冷，尖角 = 攻击性',
   },
   {
-    key: 'visualComplexity',
-    labelZh: '视觉复杂度',
-    labelEn: 'Visual Complexity',
-    group: 'form',
-    anchors: ['silhouette-first', 'readable', 'detailed', 'ornate', 'busy'],
-    hintZh: '缩小到多小还认得出 —— 直接决定生产成本',
-  },
-  {
     key: 'familiarity',
-    labelZh: '熟悉度',
-    labelEn: 'Familiarity',
+    labelZh: '符号化',
+    labelEn: 'Symbolization',
     group: 'read',
     anchors: ['abstract', 'archetypal', 'recognizable', 'referential', 'realistic'],
-    hintZh: '离日常经验多近 —— 决定观众能否立刻读懂它的意图',
+    hintZh: '造型有多接近可识别的现实符号 —— 从抽象到写实',
+  },
+  {
+    key: 'visualComplexity',
+    labelZh: '直觉复杂度',
+    labelEn: 'Intuitive Complexity',
+    group: 'read',
+    anchors: ['silhouette-first', 'readable', 'detailed', 'ornate', 'busy'],
+    hintZh: '第一眼需要处理多少视觉信息 —— 从清晰剪影到繁复细节',
   },
   {
     key: 'threatAffinity',
@@ -515,9 +515,10 @@ export type Entry = {
   domain: DomainCode
   name: string
 
-  sourceUrl: string
-  sourceTitle: string
-  sourceGame: string
+  source: string
+  author: string
+  license: import('@/options/licensing').LicenseKey
+  trainable: import('@/options/licensing').Trainable
 
   /** 相对 media 根的路径，例如 'up-49b8269f/0f1e443c-preview.png'。相对路径是为了导出与迁移。 */
   imagePath: string
