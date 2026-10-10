@@ -30,6 +30,9 @@ ENV MEDIA_ROOT=/data/media
 COPY --from=build --chown=node:node /app/package.json ./
 COPY --from=build --chown=node:node /app/next.config.js ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
+# ⚠️ 迁移文件是**运行时**读的（`getDatabase()` 里 `migrate()`），不是构建期资源
+# —— 少了这一层，容器起来第一次请求就会在 migrate 上 500。
+COPY --from=build --chown=node:node /app/drizzle ./drizzle
 COPY --from=build --chown=node:node /app/.next ./.next
 COPY --from=build --chown=node:node /app/public ./public
 

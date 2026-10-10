@@ -42,7 +42,7 @@ async function main(): Promise<void> {
     console.log(`${ok ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`)
   }
 
-  db.pingDatabase()
+  await db.pingDatabase()
 
   // 最小合法 PNG（1×1 透明像素）。service 层只校验路径形状，不看字节内容。
   const png = Buffer.from(

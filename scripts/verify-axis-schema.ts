@@ -6,7 +6,7 @@ async function main(): Promise<void> {
   const { closeDatabase, getDatabase, pingDatabase } = await import('@/backstage/db/database')
 
   for (let pass = 0; pass < 2; pass += 1) {
-    pingDatabase()
+    await pingDatabase()
     const db = await getDatabase()
     const tables = await db.all<{ name: string }>(sql`SELECT name FROM sqlite_master WHERE type = 'table'`)
     const names = new Set(tables.map((row) => row.name))

@@ -1,4 +1,5 @@
-import { integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core'
+import { check, index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
+import { sql } from 'drizzle-orm'
 import { UNCLEAR_KEY } from '@/options/shared'
 
 /**
@@ -82,7 +83,18 @@ export const entries = sqliteTable('entries', {
 
   createdAt: text('createdAt').notNull(),
   updatedAt: text('updatedAt').notNull(),
-})
+}, (table) => [
+  // ⚠️ CHECK 里必须是**字面量**：sql 模板里的 JS 字符串会被当成绑定参数，而
+  // CHECK 约束不接受参数。所以这里的 'unclear' 与 options/shared 的
+  // UNCLEAR_KEY 是**手工同步**的 —— 改那边要记得改这里。
+  check('entries_trainable_check', sql`${table.trainable} IN ('yes', 'no', 'unclear', 'user-yes')`),
+  check('entries_status_check', sql`${table.status} IN ('pending_ai', 'inbox', 'reviewed')`),
+  // ⭐ 索引名必须和迁移前手写 SQL 里的**同名**（entries_status_idx 等）——
+  // 这样「旧库 vs 迁移建的库」能逐条对齐，将来要核对结构时有可比的对象。
+  index('entries_status_idx').on(table.status, table.createdAt),
+  index('entries_created_idx').on(table.createdAt),
+  index('entries_domain_idx').on(table.domain, table.createdAt),
+])
 
 /**
  * ⭐ monster 扩展表 —— **2026-10-06 已清空**，1:1 外键指向 entries.id。
@@ -147,7 +159,12 @@ export const entryTags = sqliteTable(
     confidence: real('confidence').notNull().default(1),
     createdAt: text('createdAt').notNull(),
   },
-  (table) => [primaryKey({ columns: [table.entryId, table.tagId] })],
+  (table) => [
+    primaryKey({ columns: [table.entryId, table.tagId] }),
+    check('entry_tags_confidence_check', sql`${table.confidence} BETWEEN 0 AND 1`),
+    index('entry_tags_tag_idx').on(table.tagId, table.entryId),
+    index('entry_tags_origin_idx').on(table.origin, table.ruleId),
+  ],
 )
 
 /**
@@ -193,7 +210,11 @@ export const entryAxisValues = sqliteTable(
     setAt: text('setAt').notNull(),
     updatedAt: text('updatedAt').notNull(),
   },
-  (table) => [primaryKey({ columns: [table.entryId, table.spaceId, table.axisKey] })],
+  (table) => [
+    primaryKey({ columns: [table.entryId, table.spaceId, table.axisKey] }),
+    check('entry_axis_values_value_check', sql`${table.value} >= 0 AND ${table.value} <= 1`),
+    index('entry_axis_values_idx').on(table.spaceId, table.axisKey, table.value),
+  ],
 )
 
 /**
@@ -273,7 +294,13 @@ export const designAxes = sqliteTable('design_axes', {
   sortOrder: integer('sortOrder').notNull().default(0),
   createdAt: text('createdAt').notNull(),
   updatedAt: text('updatedAt').notNull(),
-})
+}, (table) => [
+  // ⚠️ 空间内 key 唯一 —— 这是「按 code 定位空间、按 key 定位轴」这套寻址
+  // 方式的前提。没有它，同一空间下能插两个同名轴，写入侧就分不清自己在给
+  // 哪个轴打分。
+  uniqueIndex('design_axes_space_key').on(table.spaceId, table.key),
+  index('design_axes_space_idx').on(table.spaceId, table.sortOrder),
+])
 
 /**
  * 键值设置表。PIN 的 scrypt 散列与 epoch 落在这里（`backstage/atlas/pin.service.ts`）。

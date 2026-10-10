@@ -48,16 +48,28 @@ node --conditions react-server --import tsx scripts/verify-atlas.ts
 
 ## 三、schema 改动的门禁
 
-`backstage/db/database.ts` 的 `ensureSchema` 只创建当前结构和首次种子。旧库结构必须先做显式、可验证的迁移；运行时不做兼容搬运。
+**结构只有一份真相：`backstage/db/schema.ts`。** 建表由 drizzle 迁移完成（drizzle-orm / drizzle-kit 都锁 `1.0.0-rc.4` 精确版本，无 `^`），运行时 `getDatabase()` 里 `migrate()` 自动跑到最新。
 
-⚠️ **破坏性 schema 变更的规则**：撞到 legacy 表且非空时**直接抛错，不自动搬数据**。
+```bash
+npm run db:generate   # 改完 schema.ts 必跑：产出 drizzle/<时间戳>_<名字>/migration.sql
+npm run db:migrate    # 手动跑迁移（部署前单跑一次，让结构问题在启动前响）
+npm run db:check      # CI 门禁
+```
+
+⚠️ **门禁必须是 `db:check`，不能用 `drizzle-kit check`。** 实测（rc.4）`drizzle-kit check` 在「schema 已改、还没 generate」时照样打印 `Everything's fine` 并以 0 退出 —— 它抓不到这里唯一要抓的那件事。`db:check` 的判据是**跑一次 generate，再看 `drizzle/` 有没有变脏**（用 `git status --porcelain`，因为新迁移是未跟踪文件，`git diff` 看不见）。
+
+⚠️ **两个包锁精确版本不是洁癖**：`^1.0.0-rc.4` 的语义是「>=1.0.0-rc.4 <2.0.0」，会把后续 rc 一路放进可接受范围 —— 每次 `npm install` 装到的都可能不同，于是「本地能跑、CI 红」没有复现路径。另外**稳定版 0.45.x 没有 `node:sqlite` 驱动**，必须 rc。
+
+⚠️ **部署：Dockerfile 里 `COPY drizzle/` 那一行不能删。** 迁移是运行时读的目录，不是构建期打包进 bundle 的资源。少了它，容器第一次请求就在 `migrate()` 上 500。
+
+⚠️ **破坏性 schema 变更的规则**：撞到 legacy 表且非空时**直接抛错，不自动搬数据**（`assertNotLegacySchema()`）。
 
 理由：真到了有数据的时候再做一次显式迁移 —— 那时数据形态、id 语义、media 目录都要人工确认。**自动迁移的静默错误比停下来问更贵。**
 
-改 schema 前先确认库里有多少条：
+库默认在 `~/.local/share/creative-atlas/atlas.db`（可用 `DB_FILE_NAME` 指到别处）。本机没有 `sqlite3` 命令行，用 node 查：
 
 ```bash
-sqlite3 local.db "SELECT count(*) FROM entries"
+node -e "const{DatabaseSync}=require('node:sqlite');console.log(new DatabaseSync(process.env.HOME+'/.local/share/creative-atlas/atlas.db').prepare('SELECT count(*) c FROM entries').get())"
 ```
 
 **0 条是迁移的免费窗口**，趁那时候改最省事。
@@ -70,7 +82,7 @@ sqlite3 local.db "SELECT count(*) FROM entries"
 
 2. **强制字段只有 `source` 一项（URL 或出版物）。** tags 和 axis values 全部可空。Atlas 首先是采集系统，不是填写调查问卷。**欠账用「未打标」视图收口，不用纪律。**
 
-3. **当前 Axis 定义以 `design_axes` 表为准。** `types/atlas.ts` 的六根轴仅用于新库首次播种；写入校验读取数据库中的轴。当前 domain 列表仍是代码常量。
+3. **当前 Axis 定义以 `design_axes` 表为准。** `types/atlas.ts` 的六根轴仅用于播种（`design_spaces` 空时写入，幂等 —— 内置空间被误删会自己长回来）；写入校验读取数据库中的轴。当前 domain 列表仍是代码常量。
 
 **改动前先读 `docs/00-scope.md`。** 那是范围凭据，解冻理由和改写记录都在同一份文件里。
 

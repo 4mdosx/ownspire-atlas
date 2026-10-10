@@ -1,0 +1,997 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "id": "1673f5cf-ae4f-46aa-ba9c-1c5481cdb1f1",
+  "prevIds": [
+    "00000000-0000-0000-0000-000000000000"
+  ],
+  "ddl": [
+    {
+      "name": "design_axes",
+      "entityType": "tables"
+    },
+    {
+      "name": "design_spaces",
+      "entityType": "tables"
+    },
+    {
+      "name": "entries",
+      "entityType": "tables"
+    },
+    {
+      "name": "entry_axis_values",
+      "entityType": "tables"
+    },
+    {
+      "name": "entry_tags",
+      "entityType": "tables"
+    },
+    {
+      "name": "import_id_map",
+      "entityType": "tables"
+    },
+    {
+      "name": "monster_entries",
+      "entityType": "tables"
+    },
+    {
+      "name": "settings",
+      "entityType": "tables"
+    },
+    {
+      "name": "tags",
+      "entityType": "tables"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "design_axes"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "spaceId",
+      "entityType": "columns",
+      "table": "design_axes"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "key",
+      "entityType": "columns",
+      "table": "design_axes"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "labelZh",
+      "entityType": "columns",
+      "table": "design_axes"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "''",
+      "generated": null,
+      "name": "labelEn",
+      "entityType": "columns",
+      "table": "design_axes"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "''",
+      "generated": null,
+      "name": "hintZh",
+      "entityType": "columns",
+      "table": "design_axes"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "''",
+      "generated": null,
+      "name": "groupKey",
+      "entityType": "columns",
+      "table": "design_axes"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'[]'",
+      "generated": null,
+      "name": "anchorsJson",
+      "entityType": "columns",
+      "table": "design_axes"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "sortOrder",
+      "entityType": "columns",
+      "table": "design_axes"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "table": "design_axes"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updatedAt",
+      "entityType": "columns",
+      "table": "design_axes"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "design_spaces"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "code",
+      "entityType": "columns",
+      "table": "design_spaces"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "labelZh",
+      "entityType": "columns",
+      "table": "design_spaces"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "''",
+      "generated": null,
+      "name": "labelEn",
+      "entityType": "columns",
+      "table": "design_spaces"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "''",
+      "generated": null,
+      "name": "hintZh",
+      "entityType": "columns",
+      "table": "design_spaces"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "sortOrder",
+      "entityType": "columns",
+      "table": "design_spaces"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "isBuiltin",
+      "entityType": "columns",
+      "table": "design_spaces"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "table": "design_spaces"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updatedAt",
+      "entityType": "columns",
+      "table": "design_spaces"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "domain",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "''",
+      "generated": null,
+      "name": "name",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "source",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'unclear'",
+      "generated": null,
+      "name": "author",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'unclear'",
+      "generated": null,
+      "name": "license",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'unclear'",
+      "generated": null,
+      "name": "trainable",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "''",
+      "generated": null,
+      "name": "imagePath",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'file'",
+      "generated": null,
+      "name": "imageSource",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "''",
+      "generated": null,
+      "name": "originalName",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "''",
+      "generated": null,
+      "name": "observed",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "''",
+      "generated": null,
+      "name": "read",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "''",
+      "generated": null,
+      "name": "worthwhileBecause",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'pending_ai'",
+      "generated": null,
+      "name": "status",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'committed'",
+      "generated": null,
+      "name": "analysisStatus",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updatedAt",
+      "entityType": "columns",
+      "table": "entries"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "entryId",
+      "entityType": "columns",
+      "table": "entry_axis_values"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "spaceId",
+      "entityType": "columns",
+      "table": "entry_axis_values"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "axisKey",
+      "entityType": "columns",
+      "table": "entry_axis_values"
+    },
+    {
+      "type": "real",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "value",
+      "entityType": "columns",
+      "table": "entry_axis_values"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "setAt",
+      "entityType": "columns",
+      "table": "entry_axis_values"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updatedAt",
+      "entityType": "columns",
+      "table": "entry_axis_values"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "entryId",
+      "entityType": "columns",
+      "table": "entry_tags"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "tagId",
+      "entityType": "columns",
+      "table": "entry_tags"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'user'",
+      "generated": null,
+      "name": "origin",
+      "entityType": "columns",
+      "table": "entry_tags"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "''",
+      "generated": null,
+      "name": "ruleId",
+      "entityType": "columns",
+      "table": "entry_tags"
+    },
+    {
+      "type": "real",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "1",
+      "generated": null,
+      "name": "confidence",
+      "entityType": "columns",
+      "table": "entry_tags"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "table": "entry_tags"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "externalId",
+      "entityType": "columns",
+      "table": "import_id_map"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "localId",
+      "entityType": "columns",
+      "table": "import_id_map"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "importedAt",
+      "entityType": "columns",
+      "table": "import_id_map"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "entryId",
+      "entityType": "columns",
+      "table": "monster_entries"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "key",
+      "entityType": "columns",
+      "table": "settings"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "value",
+      "entityType": "columns",
+      "table": "settings"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "tags"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "name",
+      "entityType": "columns",
+      "table": "tags"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "createdAt",
+      "entityType": "columns",
+      "table": "tags"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updatedAt",
+      "entityType": "columns",
+      "table": "tags"
+    },
+    {
+      "columns": [
+        "spaceId"
+      ],
+      "tableTo": "design_spaces",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_design_axes_spaceId_design_spaces_id_fk",
+      "entityType": "fks",
+      "table": "design_axes"
+    },
+    {
+      "columns": [
+        "entryId"
+      ],
+      "tableTo": "entries",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_entry_axis_values_entryId_entries_id_fk",
+      "entityType": "fks",
+      "table": "entry_axis_values"
+    },
+    {
+      "columns": [
+        "spaceId"
+      ],
+      "tableTo": "design_spaces",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_entry_axis_values_spaceId_design_spaces_id_fk",
+      "entityType": "fks",
+      "table": "entry_axis_values"
+    },
+    {
+      "columns": [
+        "entryId"
+      ],
+      "tableTo": "entries",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_entry_tags_entryId_entries_id_fk",
+      "entityType": "fks",
+      "table": "entry_tags"
+    },
+    {
+      "columns": [
+        "tagId"
+      ],
+      "tableTo": "tags",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_entry_tags_tagId_tags_id_fk",
+      "entityType": "fks",
+      "table": "entry_tags"
+    },
+    {
+      "columns": [
+        "entryId"
+      ],
+      "tableTo": "entries",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_monster_entries_entryId_entries_id_fk",
+      "entityType": "fks",
+      "table": "monster_entries"
+    },
+    {
+      "columns": [
+        "entryId",
+        "spaceId",
+        "axisKey"
+      ],
+      "nameExplicit": false,
+      "name": "entry_axis_values_pk",
+      "entityType": "pks",
+      "table": "entry_axis_values"
+    },
+    {
+      "columns": [
+        "entryId",
+        "tagId"
+      ],
+      "nameExplicit": false,
+      "name": "entry_tags_pk",
+      "entityType": "pks",
+      "table": "entry_tags"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "design_axes_pk",
+      "table": "design_axes",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "design_spaces_pk",
+      "table": "design_spaces",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "entries_pk",
+      "table": "entries",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "externalId"
+      ],
+      "nameExplicit": false,
+      "name": "import_id_map_pk",
+      "table": "import_id_map",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "entryId"
+      ],
+      "nameExplicit": false,
+      "name": "monster_entries_pk",
+      "table": "monster_entries",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "key"
+      ],
+      "nameExplicit": false,
+      "name": "settings_pk",
+      "table": "settings",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "tags_pk",
+      "table": "tags",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        {
+          "value": "spaceId",
+          "isExpression": false
+        },
+        {
+          "value": "key",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "design_axes_space_key",
+      "entityType": "indexes",
+      "table": "design_axes"
+    },
+    {
+      "columns": [
+        {
+          "value": "spaceId",
+          "isExpression": false
+        },
+        {
+          "value": "sortOrder",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "design_axes_space_idx",
+      "entityType": "indexes",
+      "table": "design_axes"
+    },
+    {
+      "columns": [
+        {
+          "value": "status",
+          "isExpression": false
+        },
+        {
+          "value": "createdAt",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "entries_status_idx",
+      "entityType": "indexes",
+      "table": "entries"
+    },
+    {
+      "columns": [
+        {
+          "value": "createdAt",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "entries_created_idx",
+      "entityType": "indexes",
+      "table": "entries"
+    },
+    {
+      "columns": [
+        {
+          "value": "domain",
+          "isExpression": false
+        },
+        {
+          "value": "createdAt",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "entries_domain_idx",
+      "entityType": "indexes",
+      "table": "entries"
+    },
+    {
+      "columns": [
+        {
+          "value": "spaceId",
+          "isExpression": false
+        },
+        {
+          "value": "axisKey",
+          "isExpression": false
+        },
+        {
+          "value": "value",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "entry_axis_values_idx",
+      "entityType": "indexes",
+      "table": "entry_axis_values"
+    },
+    {
+      "columns": [
+        {
+          "value": "tagId",
+          "isExpression": false
+        },
+        {
+          "value": "entryId",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "entry_tags_tag_idx",
+      "entityType": "indexes",
+      "table": "entry_tags"
+    },
+    {
+      "columns": [
+        {
+          "value": "origin",
+          "isExpression": false
+        },
+        {
+          "value": "ruleId",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "entry_tags_origin_idx",
+      "entityType": "indexes",
+      "table": "entry_tags"
+    },
+    {
+      "columns": [
+        "code"
+      ],
+      "nameExplicit": false,
+      "name": "design_spaces_code_unique",
+      "entityType": "uniques",
+      "table": "design_spaces"
+    },
+    {
+      "columns": [
+        "name"
+      ],
+      "nameExplicit": false,
+      "name": "tags_name_unique",
+      "entityType": "uniques",
+      "table": "tags"
+    },
+    {
+      "value": "\"trainable\" IN ('yes', 'no', 'unclear', 'user-yes')",
+      "name": "entries_trainable_check",
+      "entityType": "checks",
+      "table": "entries"
+    },
+    {
+      "value": "\"status\" IN ('pending_ai', 'inbox', 'reviewed')",
+      "name": "entries_status_check",
+      "entityType": "checks",
+      "table": "entries"
+    },
+    {
+      "value": "\"value\" >= 0 AND \"value\" <= 1",
+      "name": "entry_axis_values_value_check",
+      "entityType": "checks",
+      "table": "entry_axis_values"
+    },
+    {
+      "value": "\"confidence\" BETWEEN 0 AND 1",
+      "name": "entry_tags_confidence_check",
+      "entityType": "checks",
+      "table": "entry_tags"
+    }
+  ],
+  "renames": []
+}

@@ -13,7 +13,7 @@ import { ATLAS_VERSION } from '@/backstage/version'
  */
 export async function GET() {
   try {
-    pingDatabase()
+    await pingDatabase()
     return NextResponse.json({
       ok: true,
       version: ATLAS_VERSION,

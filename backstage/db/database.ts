@@ -2,9 +2,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { drizzle, type NodeSQLiteDatabase } from 'drizzle-orm/node-sqlite'
+import { migrate } from 'drizzle-orm/node-sqlite/migrator'
 // types/atlas.ts 提供首次建库种子；运行时轴定义只从 design_axes 读取。
 import { CREATURE_AXIS_SEEDS, CREATURE_AXIS_GROUPS } from '@/types/atlas'
-import { UNCLEAR_KEY } from '@/options/shared'
+import { designAxes, designSpaces } from '@/backstage/db/schema'
 
 export type AppDatabase = NodeSQLiteDatabase
 
@@ -59,144 +60,97 @@ function sqlite(): DatabaseSync {
 
 let schemaReady = false
 
-/** The current schema is created directly. Older databases need an explicit, reviewed migration. */
-function ensureSchema(): void {
-  if (schemaReady) return
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+/**
+ * 迁移文件的位置。
+ *
+ * ⚠️ 这是**运行时**读的目录，不是构建期打包进 bundle 的资源 —— 所以容器镜像里
+ * 必须把 `drizzle/` 一起 COPY 进去（Dockerfile 里有这一行，别删）。
+ * 用 `process.cwd()` 拼而不是 import 一个常量，是为了让验证脚本能把 cwd 指到别处跑。
+ */
+function migrationsFolder(): string {
+  return path.join(/* turbopackIgnore: true */ process.cwd(), 'drizzle')
+}
+
+/**
+ * 拒绝给**迁移系统之前**的旧库跑迁移。
+ *
+ * ⚠️ 必须在 `migrate()` **之前**跑，且早于任何写操作 —— 因为 `migrate()` 撞上
+ * 已经存在的表只会抛一句 `table entries already exists`，而那句指不到
+ * 「你手上是个 2026-10 之前建的库」这个真正的原因。
+ *
+ * ⚠️ 只**报错**，不搬运。自动迁移的静默错误比停下来问更贵。
+ */
+function assertNotLegacySchema(): void {
   const oldTable = sqlite().prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entry_taxonomy'").get()
   const entryColumns = sqlite().prepare('PRAGMA table_info(entries)').all() as Array<{ name: string }>
   const tagColumns = sqlite().prepare('PRAGMA table_info(tags)').all() as Array<{ name: string }>
   const entryTagColumns = sqlite().prepare('PRAGMA table_info(entry_tags)').all() as Array<{ name: string }>
-  const freshDatabase = entryColumns.length === 0
   if (oldTable || entryColumns.some((column) => column.name === 'notes') ||
       entryColumns.some((column) => column.name === 'sourceUrl') ||
       tagColumns.some((column) => column.name === 'groupName') ||
       (entryTagColumns.length > 0 && !entryTagColumns.some((column) => column.name === 'confidence'))) {
     throw new Error('检测到旧版数据库结构。请先执行显式迁移，数据库未被修改。')
   }
+}
 
-  sqlite().exec(`
-    CREATE TABLE IF NOT EXISTS entries (
-      id TEXT PRIMARY KEY,
-      domain TEXT NOT NULL,
-      name TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL,
-      author TEXT NOT NULL DEFAULT '${UNCLEAR_KEY}',
-      license TEXT NOT NULL DEFAULT '${UNCLEAR_KEY}',
-      trainable TEXT NOT NULL DEFAULT '${UNCLEAR_KEY}' CHECK (trainable IN ('yes', 'no', '${UNCLEAR_KEY}', 'user-yes')),
-      imagePath TEXT NOT NULL DEFAULT '',
-      imageSource TEXT NOT NULL DEFAULT 'file',
-      originalName TEXT NOT NULL DEFAULT '',
-      observed TEXT NOT NULL DEFAULT '',
-      read TEXT NOT NULL DEFAULT '',
-      worthwhileBecause TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL DEFAULT 'pending_ai' CHECK (status IN ('pending_ai', 'inbox', 'reviewed')),
-      analysisStatus TEXT NOT NULL DEFAULT 'committed',
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS tags (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS monster_entries (
-      entryId TEXT PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE
-    );
-    CREATE TABLE IF NOT EXISTS entry_tags (
-      entryId TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
-      tagId TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-      origin TEXT NOT NULL DEFAULT 'user',
-      ruleId TEXT NOT NULL DEFAULT '',
-      confidence REAL NOT NULL DEFAULT 1 CHECK (confidence BETWEEN 0 AND 1),
-      createdAt TEXT NOT NULL,
-      PRIMARY KEY (entryId, tagId)
-    );
-    CREATE TABLE IF NOT EXISTS import_id_map (
-      externalId TEXT PRIMARY KEY,
-      localId TEXT NOT NULL,
-      importedAt TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS design_spaces (
-      id TEXT PRIMARY KEY,
-      code TEXT NOT NULL UNIQUE,
-      labelZh TEXT NOT NULL,
-      labelEn TEXT NOT NULL DEFAULT '',
-      hintZh TEXT NOT NULL DEFAULT '',
-      sortOrder INTEGER NOT NULL DEFAULT 0,
-      isBuiltin INTEGER NOT NULL DEFAULT 0,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS design_axes (
-      id TEXT PRIMARY KEY,
-      spaceId TEXT NOT NULL REFERENCES design_spaces(id) ON DELETE CASCADE,
-      key TEXT NOT NULL,
-      labelZh TEXT NOT NULL,
-      labelEn TEXT NOT NULL DEFAULT '',
-      hintZh TEXT NOT NULL DEFAULT '',
-      groupKey TEXT NOT NULL DEFAULT '',
-      anchorsJson TEXT NOT NULL DEFAULT '[]',
-      sortOrder INTEGER NOT NULL DEFAULT 0,
-      createdAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS entry_axis_values (
-      entryId TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
-      spaceId TEXT NOT NULL REFERENCES design_spaces(id) ON DELETE CASCADE,
-      axisKey TEXT NOT NULL,
-      value REAL NOT NULL CHECK (value >= 0 AND value <= 1),
-      setAt TEXT NOT NULL,
-      updatedAt TEXT NOT NULL,
-      PRIMARY KEY (entryId, spaceId, axisKey)
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS design_axes_space_key ON design_axes(spaceId, key);
-    CREATE INDEX IF NOT EXISTS design_axes_space_idx ON design_axes(spaceId, sortOrder);
-    CREATE INDEX IF NOT EXISTS entry_tags_tag_idx ON entry_tags(tagId, entryId);
-    CREATE INDEX IF NOT EXISTS entry_tags_origin_idx ON entry_tags(origin, ruleId);
-    CREATE INDEX IF NOT EXISTS entries_status_idx ON entries(status, createdAt);
-    CREATE INDEX IF NOT EXISTS entries_created_idx ON entries(createdAt);
-    CREATE INDEX IF NOT EXISTS entries_domain_idx ON entries(domain, createdAt);
-    CREATE INDEX IF NOT EXISTS entry_axis_values_idx ON entry_axis_values(spaceId, axisKey, value);
-
-    -- 键值设置表。PIN 的 scrypt 散列与 epoch 落在这里（backstage/atlas/pin.service.ts）。
-    --
-    -- 为什么 PIN 不写在环境变量里：它是**运行期第一次访问时**由用户在浏览器里
-    -- 设定的，而环境变量必须在第一次访问**之前**就存在 —— 「首次设置」这件事
-    -- 本身没法用预置配置表达。附带好处：它不会跟着部署配置进版本库、被 diff、
-    -- 在构建日志里露面。
-    --
-    -- ⚠️ 这是**加表**，不是改表：已有库上 CREATE TABLE IF NOT EXISTS 直接补建，
-    -- 不碰任何现存数据，也不会让上面那些旧结构检查失败。
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-  `)
-
-  if (freshDatabase) {
-    const now = new Date().toISOString()
-    const spaces = [
-      ['space-mine', 'mine', '我的设计空间', 'My Space', '不是它客观有多强，是我认为它在哪', 10],
-      ['space-source', 'source', '原作坐标系', 'Source', '原作里客观是什么样 —— 观察，不是我的判断', 20],
-    ] as const
-    const insertSpace = sqlite().prepare(`INSERT INTO design_spaces
-    (id, code, labelZh, labelEn, hintZh, sortOrder, isBuiltin, createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`)
-    for (const space of spaces) insertSpace.run(...space, now, now)
-
-    const groups = new Map(CREATURE_AXIS_GROUPS.map((group) => [group.key, group]))
-    const insertAxis = sqlite().prepare(`INSERT INTO design_axes
-      (id, spaceId, key, labelZh, labelEn, hintZh, groupKey, anchorsJson, sortOrder, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    for (const [index, axis] of CREATURE_AXIS_SEEDS.entries()) {
+/**
+ * 两个内置设计空间 + 「我的」空间的维度种子。
+ *
+ * ⚠️ 判据是「design_spaces 里没有东西」，不是「这是不是新库」。种子写成幂等的
+ * 好处是：内置空间万一被误删，重启能自己长回来，而不是让整个轴系统空着
+ * 且没有任何报错。
+ */
+async function seedBuiltinSpaces(database: AppDatabase): Promise<void> {
+  const existing = await database.select({ id: designSpaces.id }).from(designSpaces).limit(1)
+  if (existing.length > 0) return
+  const now = new Date().toISOString()
+  await database.insert(designSpaces).values([
+    {
+      id: 'space-mine', code: 'mine', labelZh: '我的设计空间', labelEn: 'My Space',
+      hintZh: '不是它客观有多强，是我认为它在哪', sortOrder: 10,
+      isBuiltin: 1, createdAt: now, updatedAt: now,
+    },
+    {
+      id: 'space-source', code: 'source', labelZh: '原作坐标系', labelEn: 'Source',
+      hintZh: '原作里客观是什么样 —— 观察，不是我的判断', sortOrder: 20,
+      isBuiltin: 1, createdAt: now, updatedAt: now,
+    },
+  ])
+  const groups = new Map(CREATURE_AXIS_GROUPS.map((group) => [group.key, group]))
+  await database.insert(designAxes).values(
+    CREATURE_AXIS_SEEDS.map((axis, index) => {
       const group = groups.get(axis.group)
-      insertAxis.run(`axis-${axis.key}`, 'space-mine', axis.key, axis.labelZh, axis.labelEn,
-        axis.hintZh, `${group?.labelZh ?? ''}|${group?.labelEn ?? ''}`,
-        JSON.stringify(axis.anchors), (index + 1) * 10, now, now)
-    }
-  }
+      return {
+        id: `axis-${axis.key}`,
+        spaceId: 'space-mine',
+        key: axis.key,
+        labelZh: axis.labelZh,
+        labelEn: axis.labelEn,
+        hintZh: axis.hintZh,
+        groupKey: `${group?.labelZh ?? ''}|${group?.labelEn ?? ''}`,
+        anchorsJson: JSON.stringify(axis.anchors),
+        sortOrder: (index + 1) * 10,
+        createdAt: now,
+        updatedAt: now,
+      }
+    }),
+  )
+}
+
+/**
+ * ⭐ 结构由 drizzle 迁移建立（`drizzle-kit generate` 产出，`schema.ts` 是唯一真相）。
+ *
+ * ⚠️ **这里不再有第二份 CREATE TABLE。** 之前是「手写 SQL 建表 + schema.ts 定义
+ * 查询类型」两份各写一遍 —— 改了 schema.ts 忘了改 SQL（或反过来）没有任何报错
+ * 路径，只有真跑一次插入才暴露。现在删掉手写那份，剩下唯一一份是 schema.ts。
+ */
+async function ensureSchema(): Promise<void> {
+  if (schemaReady) return
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+  assertNotLegacySchema()
+  const database = db()
+  migrate(database, { migrationsFolder: migrationsFolder() })
+  await seedBuiltinSpaces(database)
   schemaReady = true
 }
 
@@ -232,15 +186,23 @@ export function resolveMediaPath(relative: string): string {
 
 const globalForDb = globalThis as unknown as { db: AppDatabase | undefined }
 
-export function pingDatabase(): void {
-  ensureSchema()
+/**
+ * drizzle 实例。与 `sqlite()` 一样是**可重开的**：`closeDatabase()` 把它置空，
+ * 下次调用重新包一个 —— 见 `sqlite()` 上方那条教训。
+ */
+function db(): AppDatabase {
+  if (!globalForDb.db) globalForDb.db = drizzle({ client: sqlite() })
+  return globalForDb.db
+}
+
+export async function pingDatabase(): Promise<void> {
+  await ensureSchema()
   sqlite().prepare('SELECT 1').get()
 }
 
 export async function getDatabase(): Promise<AppDatabase> {
-  ensureSchema()
-  if (!globalForDb.db) globalForDb.db = drizzle({ client: sqlite() })
-  return globalForDb.db
+  await ensureSchema()
+  return db()
 }
 
 export async function closeDatabase(): Promise<void> {
