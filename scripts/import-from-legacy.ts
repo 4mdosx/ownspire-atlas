@@ -70,14 +70,14 @@ async function main(): Promise<void> {
   }
 
   // 拓扑序：被引用的先写。
-  if (rowSets.design_spaces.length) await db.insert(designSpaces).values(rowSets.design_spaces).onConflictDoNothing()
-  if (rowSets.design_axes.length) await db.insert(designAxes).values(rowSets.design_axes).onConflictDoNothing()
-  if (rowSets.tags.length) await db.insert(tags).values(rowSets.tags).onConflictDoNothing()
-  if (rowSets.entries.length) await db.insert(entries).values(rowSets.entries).onConflictDoNothing()
-  if (rowSets.monster_entries.length) await db.insert(monsterEntries).values(rowSets.monster_entries).onConflictDoNothing()
-  if (rowSets.entry_tags.length) await db.insert(entryTags).values(rowSets.entry_tags).onConflictDoNothing()
-  if (rowSets.entry_axis_values.length) await db.insert(entryAxisValues).values(rowSets.entry_axis_values).onConflictDoNothing()
-  if (rowSets.import_id_map.length) await db.insert(importIdMap).values(rowSets.import_id_map).onConflictDoNothing()
+  if (rowSets.design_spaces.length) await db.insert(designSpaces).values(rowSets.design_spaces as never[]).onConflictDoNothing()
+  if (rowSets.design_axes.length) await db.insert(designAxes).values(rowSets.design_axes as never[]).onConflictDoNothing()
+  if (rowSets.tags.length) await db.insert(tags).values(rowSets.tags as never[]).onConflictDoNothing()
+  if (rowSets.entries.length) await db.insert(entries).values(rowSets.entries as never[]).onConflictDoNothing()
+  if (rowSets.monster_entries.length) await db.insert(monsterEntries).values(rowSets.monster_entries as never[]).onConflictDoNothing()
+  if (rowSets.entry_tags.length) await db.insert(entryTags).values(rowSets.entry_tags as never[]).onConflictDoNothing()
+  if (rowSets.entry_axis_values.length) await db.insert(entryAxisValues).values(rowSets.entry_axis_values as never[]).onConflictDoNothing()
+  if (rowSets.import_id_map.length) await db.insert(importIdMap).values(rowSets.import_id_map as never[]).onConflictDoNothing()
 
   const counts = {
     entries: (await db.select().from(entries)).length,

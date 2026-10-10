@@ -16,7 +16,21 @@ function resolveDbPath(): string {
   return process.env.DB_FILE_NAME || path.join(process.env.DATA_DIR ?? DEFAULT_DATA_DIR, 'atlas.db')
 }
 
-const dbPath = resolveDbPath()
+/**
+ * ⚠️ **路径必须在**调用时**解析，不能在模块顶层算好**（`const dbPath = ...`）。
+ *
+ * 验证脚本的典型写法是「顶部写 `process.env.DB_FILE_NAME = ...`，下面 import
+ * service」，而 ESM 的 import **先于**任何语句执行（tsx 转 CJS 也一样，require
+ * 被提到模块顶部）—— 于是 database.ts 会在赋值发生**之前**把路径定死，脚本
+ * 就静默跑在**生产库**上：建测试数据、清库、收尾，全发生在真库里，而日志
+ * 看起来完全正常。shrine 就是这样跑了很久（2026-10-10 才发现，库里躺着 11 条
+ * 标题为「另一段」的测试素材）。
+ *
+ * 配合惰性的 `sqlite()`（连接首次使用时才开），「先设 env 再打开」才成立。
+ */
+function dbPath(): string {
+  return resolveDbPath()
+}
 
 /**
  * ⚠️ 连接**必须是可重开的**，不能是模块级常量。
@@ -34,7 +48,7 @@ let connection: DatabaseSync | null = null
 
 function sqlite(): DatabaseSync {
   if (connection) return connection
-  const opened = new DatabaseSync(dbPath)
+  const opened = new DatabaseSync(dbPath())
   //⭐ 连接建立时立刻设这三项，而不是每次查询前 —— 因为它们是**连接级**设置。
   //
   // ⚠️ `busy_timeout` 是修「读时报 `database is locked`」的标准解法（默认 0ms，
@@ -146,7 +160,7 @@ async function seedBuiltinSpaces(database: AppDatabase): Promise<void> {
  */
 async function ensureSchema(): Promise<void> {
   if (schemaReady) return
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+  fs.mkdirSync(path.dirname(dbPath()), { recursive: true })
   assertNotLegacySchema()
   const database = db()
   migrate(database, { migrationsFolder: migrationsFolder() })
@@ -219,7 +233,7 @@ export async function closeDatabase(): Promise<void> {
 
 /** 容器启动前先探测数据库可用 —— /healthz 要返回这个。 */
 export function databaseFile(): string {
-  return dbPath
+  return dbPath()
 }
 
 export function mediaRootExists(): boolean {
